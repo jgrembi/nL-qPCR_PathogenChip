@@ -1,0 +1,1719 @@
+---
+title: "Analyses conducted for Journal of Clinical Microbiology manuscript: High-throughput multi-parallel enteropathogen quantification via nano-liter qPCR"
+author: "J Grembi"
+date: "3/5/2019"
+output: 
+  BiocStyle::pdf_document:
+      number_sections: no
+      toc: yes
+      # toc_float: yes
+      df_print: paged
+---
+
+```{r setup, include=FALSE}
+#latex_document:
+rm(list = ls())
+path2MainDir <- "/Users/JGrembi/Dropbox/01_PathogenChip/Benchmarks/Results/finalAnalyses/"
+
+
+# Save generated figures
+datestamp <- gsub(":", "_", gsub("[[:space:]]+", "-", date()), fixed=TRUE)
+#opts_chunk$set(fig.path = paste0("./figures/", datestamp, "/"), dev='pdf') 
+knitr::opts_chunk$set(dev = c('pdf',"png"), fig.path = "/Users/JGrembi/Dropbox/01_PathogenChip/Benchmarks/Results/finalAnalyses/figs/")
+
+# Needed packages
+.packages <- c("reshape2", "MASS", "gridExtra", "viridis", "readxl", "cowplot","sqldf", "kableExtra","epiR","egg", "knitr", "tidyverse")
+lapply(.packages, require, character.only = TRUE)
+
+# Set white theme for all figures
+theme_set(theme_bw())
+```
+# Data 
+## Load data
+```{r, eval= FALSE}
+chipData_target <- readRDS(paste0(path2MainDir, "chipData_target.Rds")) %>%
+  mutate(Chip = factor(Chip, levels = c("WAF1", "WAF2", "WAF3", "WAF4", "WAF5", "WAF6", "WAF7", "WAF8", "WAF9", "WAF10", "WAF11", "WAF12", "WAF13", "WAF14", "MSU1.1", "MSU2.1","MSU1.2", "MSU2.2", "MSU1.3","MSU2.3", "MSU3", "MSU4","MSU5","MSU6","MSU7","MSU8","MSU9","MSU10","MSU11","MSU12","MSU13","MSU14","MSU15","MSU16","MSU17","MSU18","MSU19","MSU20","MSU21","MSU22","MSU23","MSU24","MSU25","MSU26","MSU27","MSU28","MSU29","MSU30","MSU31","MSU32","MSU33", "MSU34", "MSU35", "MSU36", "MSU37", "MSU38")),
+         TargetName = factor(TargetName, levels = c("aggR","STh","STp","eltA", "bfpA","eaeA","stx1","stx2","ipaH","cdtA","tcdB","CPE","ureA","invA","tcpA","yadA","18S_Crypto", "18S_Ehist","18S_Giardia","ITS1_Ascaris","18S_Trich","16S_TotalArch", "16S_TotalBact", "ITS1_TotalFungi","PhHV","ACAA2","B2M","ESRRA")),
+         labelName = factor(TargetName, levels = c("aggR","STh","STp","eltA", "bfpA","eaeA","stx1","stx2","cdtA","tcdB","CPE","ureA","invA","ipaH", "tcpA","yadA","18S_Crypto", "18S_Ehist","18S_Giardia","ITS1_Ascaris","18S_Trich","16S_TotalArch", "16S_TotalBact", "ITS1_TotalFungi","PhHV","ACAA2","B2M","ESRRA"), labels = c("EAEC (aggR)", "ST-ETEC (STh)", "ST-ETEC (STp)", "LT-ETEC (eltA)", "EPEC (bfpA)", "EPEC (eaeA)", "STEC (stx1)", "STEC (stx2)", "Campylobacter jejuni/coli (cdtA)", "Clostridium difficile (tcdB)", "Clostridium perfringens (CPE)", "Helicobacter pylori (ureA)", "Salmonella enterica (invA)", "Shigella/EIEC (ipaH)", "Vibrio cholerae (tcpA)", "Yersinia enterocolitica (yadA)", "Cryptosporidium (18S)", "Entamoeba histolytica (18S)", "Giardia (18S)", "Ascaris lumbricoides (ITS1)", "Trichuris trichiura (18S)", "Total Archaea (16S)", "Total Bacteria (16S)", "Total Fungi (ITS1)", "PhHV (gB)", "Mus musculus (ACAA2)", "Mus musculus (B2M)", "Mus musculus (ESRRA)")),
+         Type = factor(Type, levels = c("Pathogenic_Ecoli", "Bacteria", "HP", "General", "QC")),
+         chipNum = as.numeric(ifelse(grepl("WAF", Chip), gsub("WAF", "", Chip), gsub("MSU","", Chip))),
+         operator = ifelse(grepl("WAF", Chip), "Masy&Max", ifelse(chipNum >24, "Christi", "Jeff")))
+
+saveRDS(chipData_target, file = paste0(path2MainDir,"chipData_target.RDS"))
+```
+
+```{r}
+chipData_target <- readRDS(paste0(path2MainDir,"chipData_target.RDS"))
+```
+
+The nomenclature in this dataset is that Ct of NA means that the result was suspect (multiple melt peaks, etc.) and Ct = 99 means true non-detect
+
+## Quality Checks
+
+### Look at MUS Controls 
+```{r MUS_controls, cache = TRUE, echo = FALSE}
+MUS <- c("MUS_ACAA2_CONTROL1_F", "MUS_B2M_CONTROL2_F", "MUS_ESRRA_CONTROL3_F")
+
+musByChip <- chipData_target %>%
+  filter(Assay %in% MUS) %>%
+  group_by(Chip, Assay, operator) %>%
+  summarise(pctNA = sum(is.na(Ct))/(sum(is.na(Ct)) + sum(!is.na(Ct))),
+            meanMUS = mean(Ct, na.rm = T), 
+            sdMUS = sd(Ct, na.rm = T))
+ggplot(musByChip) + geom_point(aes(x = Chip, y = meanMUS, color = Assay, shape = operator)) + theme(axis.text.x = element_text(angle = 90, vjust = .5))
+
+```
+
+There are noticeable changes in Ct value when we change Mastermix lots (new lot tested for c(MSU1.3, MSU2.3, MSU3, MSU4) and another DOUBLE CHECK WHAT HAPPENED FOR 25-32.
+
+#### Identify samples with poor positive controls and change all Ct to NA (Suspect result)
+```{r, echo = FALSE}
+## Identify samples with less and 2 (out of 3) MUS spike-ins detected 
+badMUS <- chipData_target %>%
+  filter(Assay %in% MUS) %>%
+  mutate(CtNew = ifelse(CtNew == 99, NA, CtNew)) %>%
+  group_by(Sample, Chip, TargetName) %>%
+  summarise(CtNewMean = mean(CtNew, na.rm = T)) %>%
+  dcast(Sample + Chip ~ TargetName, value.var = "CtNewMean") %>%
+  mutate(rowname = paste0(Sample, "_", Chip)) %>%
+  column_to_rownames() %>%
+  rowwise %>%
+  mutate(NA_per_row = sum(is.nan(c(ACAA2,B2M,ESRRA))), 
+         dropSample = ifelse(NA_per_row >1, TRUE, FALSE))
+
+
+table(badMUS$dropSample, badMUS$Chip)
+
+chipData_target_MUS <- chipData_target %>%
+  left_join(badMUS %>% select(Sample, Chip, dropSample)) %>%
+  mutate(CtNew = ifelse(dropSample == TRUE, NA, CtNew))  #Filter out all results for samples which didn't detect at least 2 MUS positive controls
+```
+
+There are some obvious chips where something strange was going on (MSU 27, 29, 30).  These were all associated with a single (new) operator at MSU. We never discovered the reasons for the discrepancies, so we exclude these chips from further analysis. 
+
+### Look at NTC and Determine min Ct for each assay X chip
+```{r}
+#Look for NTC contamination (defined as Ct < 30)
+NTC <- chipData_target %>%
+  filter(Sample == "NTC", !(Assay %in% MUS)) %>%
+  group_by(Assay, Chip) %>%
+  summarise(
+    n = n(),
+    n99 = sum(CtNew == 99, na.rm = T),
+    nNA = sum(is.nan(CtNew)),
+    pctNTCNA = nNA/n*100,
+    minNTC = ifelse(nNA == n, NA, min(CtNew, na.rm = T)), 
+    meanNTC = mean(CtNew, na.rm = T))
+  
+chipData_target_MUS_NFW <- chipData_target_MUS %>%
+  left_join(NTC %>% select(Assay, Chip, minNTC, meanNTC)) %>%
+  mutate(CtNew = ifelse(is.na(CtNew) | CtNew == 99, CtNew, ifelse(minNTC > 30 | is.na(minNTC), CtNew, ifelse(CtNew >= minNTC & TargetName != "16S_TotalBact" & meanNTC < 30, NA, CtNew))))
+```
+
+#Performance Characteristics
+
+## Efficiency & Linearity
+```{r}
+df_std <- chipData_target_MUS_NFW %>%
+  filter(!is.na(Panel), !grepl("S1", Sample), !grepl("S2", Sample), !grepl("_P8", Sample)) %>%
+  filter(Panel == targetPanel | Panel == secondPanel | Panel == thirdPanel)
+  
+#Keep only Ct values 30 and below  ################
+df_std_mini <- df_std %>%
+  filter(!is.na(CtNew)) %>%
+  filter(CtNew <= 30)
+
+# Calculate sample mean and sd for each assay and high and low outlier cutoff values (defined as mean +/- 1.96sd)
+std.outlier <- df_std_mini %>%
+  group_by(Assay, Sample) %>%
+  summarise(n = n(),
+            meanCt = mean(CtNew, na.rm = T),
+            sdCt = sd(CtNew, na.rm = T),
+            outlierCutoffLow = meanCt - ifelse(is.na(sdCt), 0, 4*sdCt),
+            outlierCutoffHigh = meanCt + ifelse(is.na(sdCt), 0, 4*sdCt))
+
+df_std_mini <- df_std_mini %>%
+  left_join(std.outlier %>% select(Assay, Sample, outlierCutoffLow, outlierCutoffHigh)) %>%
+  mutate(outlier_NA = ifelse(CtNew < outlierCutoffLow | CtNew > outlierCutoffHigh, TRUE, FALSE),
+         CtNew = ifelse(is.na(CtNew) | CtNew == 99, CtNew, ifelse(CtNew >= outlierCutoffLow & CtNew <= outlierCutoffHigh, CtNew, NA)))
+
+
+## ID Poor chips that should be removed from the analysis:
+    # M1_2.1 & M1_2.2, M1_2.3, M3_4, M5_6, M7_8, M9_10, M11_12, M13_14, M15_16, M17_18, M19_20, and M21_22 are the first chips we ran at MSU.  This coincided with when we switched from sending samples in 1.5mL Epi tubes to sending samples in 96-well plates. It took us several months to determine that the problems with standard curve efficiency were related to DNA adherence to the plastic of the 96-well plates (lowest concentrations were coming up at later Ct values than expected).  From Chip M23+ we started pre-washing wells containing standard curves with BSA and this solved the problem!  This adherence was not expected to be a problem for fecal DNA samples as the abundance of DNA and other proteins is expected to be high enough that it wouldn't impact results of any individual assay.  Whereas with the standard curves, we had only 800 copies of synthetic DNA per uL of TE buffer in the lowest concentrations.
+
+PoorChips <- c("M1_2.1","M1_2.2","M7_8","M9_10","M15_16","M17_18","M3_4","M5_6", "M19_20", "M21_22", "M13_14", "M1_2.3", "M11_12")
+
+eff <- df_std_mini %>%
+  group_by(Assay, TargetName, Gene_target, Organism, Chip, Type, labelName, Group) %>%
+  # na.omit(CtNew) %>%
+  summarise(n = n(), 
+            intercept = ifelse(n > 5, lm(CtNew~log10(Conc))$coefficients[[1]], NA),
+            slope = ifelse(n > 5, lm(CtNew~log10(Conc))$coefficients[[2]], NA),
+            r.sq = ifelse(n > 5, summary(lm(CtNew~log10(Conc)))$adj.r.squared, NA),
+            Eff = 10^(-1/slope), 
+            Eff.pct = (Eff-1)*100,
+            stdMinCt = min(CtNew, na.rm = T),
+            stdMaxCt = max(CtNew, na.rm = T),
+            meanTm = mean(Tm, na.rm = T),
+            sdTm = sd(Tm, na.rm = T)) %>%
+  mutate(Group = factor(Group, levels = c("W1_2","W3_4","W5_6","W7_8","W13_14","M1_2.1","M1_2.2","M1_2.3","M3_4","M5_6","M7_8","M9_10","M11_12","M13_14","M15_16","M17_18","M19_20", "M21_22", "M23_24", "M25_26", "M27_28", "M29_30", "M31_32", "M33","M34_35","M36_37", "M38")))
+  
+eff.outlier <- eff %>%
+  ungroup() %>%
+  filter(!(Group %in% PoorChips)) %>%
+  filter(!grepl("MUS", Assay))
+
+
+ggplot(eff.outlier) + geom_histogram(aes(x = Eff.pct)) + facet_wrap(~labelName)
+```
+#Efficiencies calculated using standard curve points from all chips with no known problems
+```{r}
+eff.all <- df_std_mini %>%
+  filter(!(Group %in% PoorChips)) %>%
+  group_by(Assay, TargetName, Gene_target, Organism, Type, labelName) %>%
+  # na.omit(CtNew) %>%
+  summarise(n = n(), 
+            intercept = ifelse(n > 5, lm(CtNew~log10(Conc))$coefficients[[1]], NA),
+            slope = ifelse(n > 5, lm(CtNew~log10(Conc))$coefficients[[2]], NA),
+            r.sq = ifelse(n > 5, summary(lm(CtNew~log10(Conc)))$adj.r.squared, NA),
+            Eff = 10^(-1/slope), 
+            Eff.pct = (Eff-1)*100,
+            stdMinCt = min(CtNew, na.rm = T),
+            stdMaxCt = max(CtNew, na.rm = T),
+            meanTm = mean(Tm, na.rm = T),
+            sdTm = sd(Tm, na.rm = T))
+  
+```
+
+
+```{r Efficiencies}
+typeLabels <- list(expression(paste("Pathogenic ", italic("E. coli"))), "Other Bacteria", "Protozoa & Helminthes", "Total Archaea, Bacteria & Fungi", "QC Assays")
+
+set.seed(4356)
+ggplot(eff.outlier, aes(x = labelName, y = Eff.pct)) + 
+  # geom_rect(aes(xmin = 0.5, xmax = 26.5, ymin = 87.5, ymax = 100), fill = "#DCA8A0", alpha = 0.2) +
+  geom_boxplot(outlier.shape = NA, fill = "transparent") + ylab("Efficiency (%)") + 
+  # theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  theme(panel.background = element_rect(fill = "transparent", colour = NA), # bg of the panel
+    plot.background = element_rect(fill = "transparent", colour = NA), # get rid of legend bg
+    legend.background = element_rect(fill = "transparent", colour = NA),
+    rect = element_rect(fill = "transparent")) + 
+  xlab("") + 
+  scale_color_viridis(discrete = TRUE, labels = typeLabels) + 
+  geom_jitter(alpha = 0.5, color = "#1878A5") + #color = "#1878A5"
+  ylim(70,120) + 
+  coord_flip() + 
+  scale_x_discrete(limits = rev(levels(eff.outlier$labelName)[1:25]))
+ 
+```
+
+```{r slope_interceptPlot, fig.width = 10}
+fig.slope <- ggplot(
+  eff.outlier, 
+  aes(x = labelName, y = slope), 
+) + 
+  geom_boxplot(outlier.shape = NA) + 
+  labs(y = "Slope", x = "") + 
+  geom_jitter(
+    aes(color = Type), 
+    alpha = 0.5, 
+    size = 1
+  ) + 
+  scale_color_viridis(discrete = TRUE, guide = FALSE) + 
+  coord_flip() + 
+  scale_x_discrete(limits = rev(levels(eff.outlier$labelName)[1:25])) + 
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+
+fig.intercept <- ggplot(
+  eff.outlier, 
+  aes(x = labelName, y = intercept)
+) + 
+  geom_boxplot(outlier.shape = NA) + 
+  labs(y = "Intercept", x = "") + 
+  # theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5)) + 
+  geom_jitter(
+    aes(color = Type), 
+    alpha = 0.5, 
+    size = 1
+  ) + 
+  scale_color_viridis(discrete = TRUE, labels = typeLabels) + 
+  coord_flip() + 
+  scale_x_discrete(limits = rev(levels(eff.outlier$labelName)[1:25]), labels = NULL) +
+  theme(plot.margin = unit(c(0, 0, 0, 0), "cm"))
+
+(slope_intercept.plot <- plot_grid(fig.slope, fig.intercept, scale = c(0.92, 0.92), labels = "AUTO", ncol = 2, align ="h", rel_widths = c(1,1.2), label_x = c(0.68, .27), vjust = 1.5))
+```
+
+
+#Calculate Overall Efficiencies across all assays
+```{r, cache = TRUE}
+Assay_Comparison <- eff.outlier %>%
+  group_by(Assay,TargetName, Gene_target, Organism, Type, labelName) %>%
+  summarise(n = n(), 
+            meanEff = round(mean(Eff.pct, na.rm = TRUE), 0), 
+            medianEff = round(median(Eff.pct, na.rm = T), 1),
+            sdEff = round(sd(Eff.pct, na.rm = TRUE), 1),
+            effCV = round(sdEff/meanEff, 2), 
+            medianR2 = round(median(r.sq, na.rm = TRUE), 3), #use medians because distributions are not normal, there are outliers
+            Eff_CV = paste0(meanEff, " (", effCV,")"))  
+
+
+QC <- c("MUS_ACAA2_CONTROL1_F", "MUS_B2M_CONTROL2_F", "MUS_ESRRA_CONTROL3_F", "Liu_PhHV_F")
+MUS <- c("MUS_ACAA2_CONTROL1_F", "MUS_B2M_CONTROL2_F", "MUS_ESRRA_CONTROL3_F")
+Assays_minusQC <- Assay_Comparison[!Assay_Comparison$Assay %in% MUS,]
+
+summary(Assays_minusQC$meanEff)
+summary(Assays_minusQC$sdEff)
+summary(Assays_minusQC$effCV)
+summary(Assays_minusQC$medianR2)
+```
+
+
+```{r}
+write.table(Assay_Comparison, "AssayPerformanceDetails.txt")
+```
+### Evaluate number of copies in cases of NFW contamination
+```{r}
+NFW.contam <- chipData_target %>%
+  filter(Sample == "NTC", CtNew != 99) %>%
+  filter(CtNew < 30, !(Assay %in% MUS)) %>%
+  left_join(eff) %>%
+  mutate(Copies = round(10^((CtNew-intercept)/slope), digits = 1))
+  
+NFW.contam.summary <- NFW.contam %>%
+  group_by(TargetName, labelName) %>%
+  summarise(n = n(),
+            medianCopies = median(Copies, na.rm = T),
+            pct.25 = quantile(Copies, probs = 0.25, na.rm = T), 
+            pct.75 = quantile(Copies, probs = 0.75, na.rm = T), 
+            meanCt = mean(CtNew, na.rm = T))
+
+
+totalNFW.16S <- chipData_target %>%
+  filter(Sample == "NTC") %>%
+  group_by(TargetName) %>%
+  summarise(nTot = n()) %>%
+  right_join(NFW.contam.summary) %>%
+  mutate(contam.pct = n/ nTot*100)
+
+totalNFW.other <- totalNFW.16S %>%
+  filter(labelName != "Total Bacteria (16S)") %>%
+  ungroup() %>%
+  summarise(nTotal = sum(nTot, na.rm = T), 
+            nContam = sum(n, na.rm = T),
+            medianContam = median(medianCopies, na.rm = T), 
+            pct.25 = quantile(medianCopies, probs = 0.25, na.rm = T),
+            pct.75 = quantile(medianCopies, probs = 0.75, na.rm = T))
+
+
+```
+
+#Remove outlier Ct values [[Need to rethink if I want to include this or not.  
+Reasons to include it are 1) better accuracy for actual samples, since I have decided not to use it in making the standard curve already; 2)
+
+To use it:  If we keep it, will need to write some code to check for the number of NAs and then instead of using the mean, making the sample mean NA
+
+
+##Filter out values outside range of standard curve
+DO THIS STEP AFTER TAKING SAMPLE MEAN
+Make sure to account for assays where the standard curve was wonky and so the eff is NA.  Will need to remove those values
+```{r, cache = TRUE}
+df_minusStdCurves <- sqldf('select * from chipData_target_MUS_NFW except select * from df_std')
+data.eff <- df_minusStdCurves %>%
+  left_join(eff) 
+
+
+filterNA <- data.eff %>%
+  group_by(Assay, Sample, Group) %>%
+  summarise(n = n(),
+            n99 = sum(CtNew == 99, na.rm = TRUE),
+            nNA = sum(is.na(CtNew))) %>%
+  mutate(dropSample_NA = ifelse(nNA > 0.5*n, TRUE, FALSE), 
+         dropSample_99 = ifelse(n99 > 0.5*n, TRUE, FALSE))
+
+##Filter CtNew if it doesn't fall within the standar Standard curve 
+# data.eff$CtNew <- ifelse(data.eff$CtNew == 99 | is.na(data.eff$CtNew), data.eff$CtNew, ifelse(data.eff$CtNew > data.eff$stdMaxCt + 0.5, 99, ifelse(data.eff$CtNew < data.eff$stdMinCt - 0.5, 99, data.eff$CtNew)))
+
+##Filter out inappropriate Tm
+#data.eff$CtNew <- ifelse(data.eff$CtNew == 99 | is.na(data.eff$CtNew), data.eff$CtNew, ifelse(data.eff$Assay %in% c("Maeda_1048_1067_F", "Yu_ARC787F_Archaeaf1_806_1059_F", "Hoffman_ITS1Fungal_F"), ifelse(data.eff$Tm < (data.eff$meanTm + 2) & data.eff$Tm > (data.eff$meanTm - 2), data.eff$CtNew, 99), ifelse(data.eff$Tm < (data.eff$meanTm + 1) & data.eff$Tm > (data.eff$meanTm - 1), data.eff$CtNew, 99)))
+
+
+
+#Calculate sample mean and sd for each assay and high and low outlier cutoff values (defined as mean +/- 1sd) {removing CtNew == 99}
+# chipData.outlier <- data.eff %>%
+#   group_by(Assay, Sample, Group) %>%
+#   dplyr::summarise(meanCt = mean(CtNew, na.rm = T),
+#                    sdCt = sd(CtNew, na.rm = T),
+#                    n = sum(!is.na(CtNew)),
+#                    outlierCutoffLow = meanCt - ifelse(is.na(sdCt), 0, 2*sdCt),
+#                    outlierCutoffHigh = meanCt + ifelse(is.na(sdCt), 0, 2*sdCt))
+
+# data.eff.outlier <- data.eff %>%
+#   left_join(filterNA, by = c("Assay", "Sample", "Group")) %>%
+#   filter(dropSample_NA == FALSE, dropSample_99 == FALSE)
+```
+
+```{r, cache = TRUE}
+
+QC <- c("MUS_ACAA2_CONTROL1_F", "MUS_B2M_CONTROL2_F", "MUS_ESRRA_CONTROL3_F", "Liu_PhHV_F")
+MUS <- c("MUS_ACAA2_CONTROL1_F", "MUS_B2M_CONTROL2_F", "MUS_ESRRA_CONTROL3_F")
+
+##Looking only at samples from Chip 19-32 where we have at least 4 values 
+RepeatGroups <- c("M19_20","M21_22","M23_24", "M25_26", "M27_28", "M29_30", "M31_32", "M34_35","M36_37")
+##Remove NTC samples
+df_noStdMini <- data.eff %>%
+  filter(Sample != "NTC", Group %in% RepeatGroups) %>%
+  mutate(Copies = ifelse(is.na(CtNew), NA, ifelse(CtNew == 99, NA, round(10^((CtNew-intercept)/slope), digits = 1))))
+
+```
+
+Calculate mean values for Ct and copy number for replicate assays on a single chip
+```{r, cache = TRUE}
+ChipMeans <- df_noStdMini %>%
+  left_join(eff) %>%
+  mutate(Copies = round(10^((CtNew-intercept)/slope), digits = 1)) %>%
+  group_by(Assay, labelName, Gene_target, TargetName, Organism, Sample, Chip, Group) %>%
+  summarise(n = n(), 
+            nNA_99 = sum(CtNew == 99 | is.na(CtNew)), 
+            n99 = sum(CtNew == 99, na.rm = TRUE),
+            meanCt = ifelse(nNA_99 < 0.5*n, mean(CtNew[CtNew < 90], na.rm = T), ifelse(n99 > 0.5*n, 99, NA)), 
+            meanCopies = ifelse(nNA_99 < 0.5*n, mean(Copies[CtNew < 90], na.rm = T), ifelse(n99 > 0.5*n, 0, NA)))
+
+stdMeans <- df_std_mini %>% 
+  filter(Sample != "NTC") %>%
+  group_by(Assay, labelName, Gene_target, TargetName, Organism, Sample, Chip, Group, Conc) %>%
+  summarise(n = n(), 
+            nNA_99 = sum(CtNew == 99 | is.na(CtNew)), 
+            n99 = sum(CtNew == 99, na.rm = TRUE),
+            meanCt = ifelse(nNA_99 < 0.5*n, mean(CtNew[CtNew < 90], na.rm = T), ifelse(n99 > 0.5*n, 99, NA)))
+
+unique(stdMeans$Chip)
+
+```
+
+#LOD
+```{r, cache = TRUE}
+sampLOD <- c("WB29_PC_P8_D4","WB9_P8_D4","WB13_P8_D4","BS54_PC_P8_D4","BS52_PC_P8_D4","BS53_PC_P8_D4","WB4_P8_D4","BS3_P8_D4","BS4_P8_D4","BS55_PC_P8_D4","WB29_PC_P8_D5","WB9_P8_D5","WB13_P8_D5","BS54_PC_P8_D5","BS52_PC_P8_D5","BS53_PC_P8_D5","WB4_P8_D5","BS3_P8_D5","BS4_P8_D5","BS55_PC_P8_D5")
+
+df.LOD <- ChipMeans %>%
+  ungroup() %>%
+  filter(Sample %in% sampLOD & Group %in% c("M25_26", "M34_35")) %>%
+  filter(Group == "M34_35" & grepl("D5", Sample) | Group == "M25_26" & grepl("D4", Sample)) %>%
+  mutate(Conc = factor(ifelse(grepl("D4", Sample), 100, ifelse(grepl("D5", Sample), 10, NA))),
+         Sample = as.character(Sample),
+         StoolSamp = sapply(strsplit(Sample, "_P8_"), '[', 1))
+
+LOD.summary <- df.LOD %>%
+  group_by(Assay, Gene_target, TargetName, labelName, Conc) %>%
+  summarise(n = n(),
+            nNA = sum(is.na(meanCt)),
+            detectPos = sum(!(is.na(meanCt) | meanCt > 30)), 
+            pctPos = round(detectPos/(n-nNA)*100), 1)
+
+LOD <- LOD.summary %>%
+  dcast(Assay + Gene_target + TargetName + labelName ~ Conc, value.var = "pctPos") %>%
+  mutate(LOD = ifelse(`10` >= 95, 10, ifelse(`100` >= 95, 100, 1000)),
+         copies_g_stool = formatC(LOD*1/0.0125*1000, format = "e", digits = 0))
+
+# LOD100 <- c("stx1", "stx2", "tcpA", "18S_Crypto", "18S_Ehist", "PhHV", "yadA", "ureA", "eltA", "STh", "cdtA", "16S_TotalArch")
+LOD100 <- as.character(LOD$labelName[LOD$LOD == 100])
+```
+
+## Reproducibility
+```{r, fig.height = 6, fig.width=10, cache = TRUE}
+
+repro_all <- df_std_mini %>%
+  filter(!(Group %in% PoorChips)) %>%
+  left_join(eff.outlier) %>%
+  mutate(Copies = ifelse(is.na(CtNew), NA, ifelse(CtNew == 99, NA, round(10^((CtNew-intercept)/slope), digits = 1)))) %>%
+  select(-(F0:Ct.minus.mean)) %>%
+  group_by(TargetName, Assay, Gene_target, Dil, Conc, Type, labelName) %>%
+  summarise(n = n(),
+            meanCt = mean(CtNew[CtNew < 90], na.rm = T),
+            sdCt = sd(CtNew[CtNew < 90], na.rm = T),
+            meanCopies = mean(Copies, na.rm = T), 
+            sdCopies = sd(Copies, na.rm = T)) %>%
+  mutate(CV = ifelse(is.na(meanCopies), NA, ifelse(meanCopies == 0 | sdCopies == 0, NA, sdCopies/meanCopies*100)),
+         Category = ifelse(Dil == "D5" | Dil == "D4", "lowConcentration", "highConcentration")) %>%
+  ungroup() 
+
+
+
+## Determine reproducibility at detection limit
+repro_atLOD <- df_std_mini %>%
+  filter(!(Group %in% PoorChips)) %>%
+  left_join(eff.outlier) %>%
+  left_join(LOD) %>%
+  mutate(Copies = ifelse(is.na(CtNew), NA, ifelse(CtNew == 99, NA, round(10^((CtNew-intercept)/slope), digits = 1)))) %>%
+  filter(Conc == LOD) %>%
+  group_by(TargetName, Assay, Gene_target, Dil, Conc, Type, labelName) %>%
+  summarise(n = n(),
+            meanCt = mean(CtNew[CtNew < 90], na.rm = T),
+            sdCt = sd(CtNew[CtNew < 90], na.rm = T),
+            meanCopies = mean(Copies, na.rm = T), 
+            sdCopies = sd(Copies, na.rm = T)) %>%
+  mutate(CV = ifelse(is.na(meanCopies), NA, ifelse(meanCopies == 0 | sdCopies == 0, NA, round(sdCopies/meanCopies*100, 0))),
+    Category = "LOD")
+
+## Determine reproducibility across all higher concentrations (need to determine if this should be mean or median)
+repro_aboveLOD <- df_std_mini %>%
+  filter(!(Group %in% PoorChips)) %>%
+  left_join(eff.outlier) %>%
+  left_join(LOD) %>%
+  mutate(Copies = ifelse(is.na(CtNew), NA, ifelse(CtNew == 99, NA, round(10^((CtNew-intercept)/slope), digits = 1)))) %>%
+  filter(Conc > LOD) %>%
+  group_by(TargetName, Assay, Gene_target, Dil, Conc, Type, labelName) %>%
+  summarise(nCopyVals = n(),
+            meanCt = mean(CtNew[CtNew < 90], na.rm = T),
+            sdCt = sd(CtNew[CtNew < 90], na.rm = T),
+            meanCopies = mean(Copies, na.rm = T), 
+            sdCopies = sd(Copies, na.rm = T)) %>%
+  mutate(CV = ifelse(is.na(meanCopies), NA, ifelse(meanCopies == 0 | sdCopies == 0, NA, round(sdCopies/meanCopies*100, 0)))) %>%
+  ungroup() %>%
+  group_by(TargetName, Assay, Gene_target,Type, labelName) %>%
+  summarise(nCVs = n(),
+            medianCV = round(median(CV, na.rm = T), 0),
+            IQR.CV.low = quantile(CV, na.rm = T, probs = 0.25),
+            IQR.CV.high = quantile(CV, na.rm = T, probs = 0.75)) %>%
+  mutate(Category = "highConc")
+
+
+
+reproducibilityCV <- repro_aboveLOD %>%
+  left_join(repro_atLOD %>% select(labelName, CV)) %>%
+  ungroup() %>%
+  mutate(CV_both = paste0(medianCV, ", ", CV)) %>%
+  select(labelName, CV_both)
+
+
+#T his shows the CV for all points at the LOD
+summary(repro_atLOD$CV)
+## This shows the median CV across all other point on the std curve for each assay
+summary(repro_aboveLOD$medianCV)
+```
+```{r}
+##SI table for reproducibility
+reproducibilitySI <- df_std_mini %>%
+  filter(!(Group %in% PoorChips)) %>%
+  left_join(eff.outlier) %>%
+  mutate(Copies = ifelse(is.na(CtNew), NA, ifelse(CtNew == 99, NA, round(10^((CtNew-intercept)/slope), digits = 1)))) %>%
+  group_by(TargetName, Assay, Gene_target, Dil, Conc, Type, labelName) %>%
+  summarise(nCopyVals = n(),
+            meanCt = mean(CtNew[CtNew < 90], na.rm = T),
+            sdCt = sd(CtNew[CtNew < 90], na.rm = T),
+            meanCopies = mean(Copies, na.rm = T), 
+            sdCopies = sd(Copies, na.rm = T)) %>%
+  mutate(CV = ifelse(is.na(meanCopies), NA, ifelse(meanCopies == 0 | sdCopies == 0, NA, round(sdCopies/meanCopies*100, 1)))) %>%
+  ungroup() %>%
+  left_join(LOD) %>%
+  filter(Conc >= LOD) %>%
+  select(labelName, Conc, CV) %>%
+  spread(key = Conc, value = CV) %>%
+  filter(!grepl("Mus", labelName))
+
+# reproSI.colNames <- c("Organism (target gene)", 10, expression(10^2), expression(10^3), expression(10^4), expression(10^5), expression(10^6))
+
+reproSI.colNames <- c("Organism (target gene)", 10, "10\\textsuperscript{2}", "10\\textsuperscript{3}", "10\\textsuperscript{4}", "10\\textsuperscript{5}", "10\\textsuperscript{6}")
+##Make table
+options(knitr.kable.NA = '')
+# table2 %>%
+  # mutate_all(linebreak) %>%
+kable(reproducibilitySI, format = "latex", booktabs = T, col.names = reproSI.colNames, escape = F) %>%
+  # add_header_above(c("Organism (gene target)" = 1, "Efficiency (CV)" = 1, "LOD (copies/g stool)" = 1, "Reproducibility CV [range]" = 1, "Repeatability CV (n)" = 1, "Sensitivity" = 1, "Specificity" = 1)) #%>% 
+  # add_header_above(c(" " = 2, "Efficiency" = 1, "LOD" = 1, "Repeatability" = 1, "Reproducibility" = 1)) %>%
+  kableExtra::group_rows("Pathogenic E. coli", 1, 8) %>%
+  kableExtra::group_rows("Other Bacteria", 9, 16) %>%
+  kableExtra::group_rows("Protozoa & Helminthes", 17, 21) %>%
+  kableExtra::group_rows("General", 22, 24) %>%
+  kableExtra::group_rows("QC", 25, 25) #%>%
+  # save_kable(keep_tex = T, file = "tableS1.latex")
+  # kable_styling(latex_options = "scale_down") %>% # position = "left",
+  # add_footnote(label = c("CV of efficiency calculated across 15-20 chips", "Minimum number of gene copies per 100 nL reaction", "CV on calculated copy number for all points along the standard curve measured over 15-20 chips, range typically shows the CV of the highest (10^6) and lowest (10) concentrations", "CV in calculated copy number across 4 replicates as measured in n/241 positive samples, mean CV is reported"), notation = "alphabet", threeparttable = TRUE)
+  # column_spec(2, italic = T)
+
+```
+
+## Repeatability
+```{r}
+#Across the 4 replicates (2 from each chip) determine the mean Copy Number, sd and CV, removing the MUS assays because there aren't standard curves for MUS so the SD and CV are equal to infinity
+intraassayCV <- df_noStdMini %>%
+  filter(!grepl("MUS", Assay))%>%
+  group_by(Gene_target, Assay, TargetName, Type, Sample, Group, labelName) %>%
+  summarise(n = n(),
+         nNA = sum(is.na(CtNew)),
+         n99 = sum(CtNew == 99, na.rm = T), 
+         meanCt = ifelse(n99 <= 0.5*n, mean(CtNew[CtNew < 90], na.rm = T), NA),
+         sdCt = ifelse(n99 <= 0.5*n, sd(CtNew[CtNew < 90], na.rm = T), NA),
+         meanCopies = mean(Copies, na.rm = T),
+         sdCopies = sd(Copies, na.rm = T)) %>%
+  mutate(meanCopies = ifelse(Assay %in% LOD100, ifelse(meanCopies < 100, 0, meanCopies), ifelse(meanCopies < 10, 0, meanCopies)), 
+         ####################         ####################
+                  ####################
+                  ####################  Add in code for the other assays with LOD at 100
+                  ####################
+         CV = ifelse(meanCt == 99, NA, ifelse(meanCopies == 0 | sdCopies == 0, NA, round(sdCopies/meanCopies*100, 0))))
+```
+
+
+```{r repeat_byConc}
+##Chips 31 and 32 had major problems so we remove them here.
+plot_intraassayCV <- intraassayCV %>%
+  filter(Group != "M31_32" & !(Assay %in% MUS)) %>%
+  filter(nNA < 0.5*n, n99 < 0.5*n, (n99 + nNA) < 0.5*n) %>%
+  filter(!is.na(CV)) %>%
+  filter(!grepl("BS", Sample), !grepl("P8", Sample),  !grepl("APG", Sample)) %>%
+  filter(Sample != "POS5E8")
+  # filter(!grepl("APG", Sample) & !grepl("_P8", Sample))
+  
+
+###NOT normally distributed, so report median and IQR
+message("This is what we're reporting in the paper: ")
+summary(plot_intraassayCV$CV)
+
+##Number of samples used to calculate the CV for repeatability
+length(unique(plot_intraassayCV$Sample))
+length(unique(plot_intraassayCV$Sample[grepl("APG", plot_intraassayCV$Sample) | grepl("_P8", plot_intraassayCV$Sample)]))
+##stats on mean copy number for the repeatability plot
+summary(plot_intraassayCV$meanCopies[!is.na(plot_intraassayCV$CV)])
+
+Repeat_by_Conc <- plot_intraassayCV %>%
+  # filter(!grepl("Maeda", Assay)) %>%
+  mutate(logCopies = log10(meanCopies/0.0125*1000),
+         logCat = factor(ifelse(logCopies < 7, 7, ifelse(logCopies < 8, 8, ifelse(logCopies < 9, 9, ifelse(logCopies >= 9, 10, NA)))), levels = c(7,8,9,10)),
+         plotColor = ifelse(grepl("Maeda", Assay), "Bacterial 16S rRNA", "Pathogen virulence/marker gene")) 
+
+
+length(unique(Repeat_by_Conc$Sample))
+# Repeat_by_Conc <- plot_intraassayCV %>%
+#   mutate(logCopies = log10(meanCopies/0.0125*1000),
+#          logCat = factor(ifelse(logCopies <= 7, 7, ifelse(logCopies >7, 8, NA)), levels = c(7,8))) 
+
+x.labels <- c(expression(paste("< ", 10^7, "copies")),expression(paste(10^7, " - ", 10^8, " copies")), expression(paste(10^8, " - ", 10^9, " copies")), expression(paste("> ", 10^9, " copies")) )
+
+# x.labels.new <- c(expression(paste("< ", 10^7, "copies")), expression(paste("> ", 10^7, " copies")) )
+
+ggplot(Repeat_by_Conc, aes(x = logCat, y = CV)) + 
+  geom_boxplot(outlier.shape = NA) + 
+  ggbeeswarm::geom_beeswarm(alpha = 0.4, 
+                            aes(color = plotColor)) +
+  labs(x = "", y = "Coefficient of variation of gene copy number (%)", color = "") + 
+  ggsignif::geom_signif(
+    stat = "signif",
+    comparisons = list(c("8","9"), c("7","8"), c("7","9"), c("7","10")),
+    test = "wilcox.test", 
+    #    test.args = list(alternative = "greater"),
+    margin_top = -.08 , 
+    map_signif_level = T,
+    step_increase = 0.1,
+    vjust = -0.1
+  ) + 
+  scale_x_discrete(labels = x.labels) +
+  scale_color_viridis_d(option = "cividis", begin = 0, end = 0.7) + 
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        panel.background = element_rect(fill = "transparent", colour = NA), # bg of the panel
+        plot.background = element_rect(fill = "transparent", colour = NA), # get rid of legend bg
+        legend.background = element_rect(fill = "transparent", colour = NA), # get rid of legend bg
+        legend.key = element_rect(fill = "transparent", colour = NA), # get rid of legend panel bg
+        rect = element_rect(fill = "transparent")) 
+
+
+RepeatCV <- plot_intraassayCV %>%
+  group_by(Gene_target, Assay, TargetName, Type) %>%
+  summarise(medianCV = median(CV, na.rm = T), 
+            sdCV = sd(CV, na.rm = T), 
+            numSamples = length(unique(Sample[!is.na(CV)])),
+            CV_Num = paste0(round(medianCV, 0), " (", numSamples, ")"))
+```
+
+
+
+```{r}
+#Since we removed contaminated samples from Chip32, the replicate values from Chip 31 have nothing to compare to for this analysis, so we need to remove them from the df for the next line of code to work.
+# In addition, all of the Giardia assays for Chip30 were removed due to NTC contamination, so there isn't a standard curve for that chip
+missingSamplesMSU32 <- c("05708M11D3","08605M14D3","08104M14D3","06803M14D3","10607M14D3","BS52_PC_P8_D4","BS53_PC_P8_D4")
+
+ChipA <- c("MSU29", "MSU27", "MSU31", "MSU34", "MSU36", "MSU21", "MSU23", "MSU25", "WAF13", "WAF11", "WAF9", "WAF1", "WAF3", "WAF5", "WAF7", "MSU5", "MSU7", "MSU9", "MSU11", "MSU13", "MSU1.3", "MSU1.2", "MSU1.1", "MSU3", "MSU17", "MSU15", "MSU19")
+
+lm_eqn = function(df){
+    m = lm(A ~ B, data=df)
+    eq <- substitute(~~R^2~"="~r2, 
+                      list(r2 = format(summary(m)$r.squared, digits = 3)))
+    c(eq = as.character(as.expression(eq)));                 
+ }
+
+repeatPlot_notStd <- ChipMeans %>%
+  ungroup() %>%
+  filter(Chip != "MSU33") %>%
+  filter(!(Chip == "MSU31" & Sample %in% missingSamplesMSU32)) %>%
+  filter(!(Chip == "MSU29" & TargetName == "18S_Giardia")) %>%
+  filter(!grepl("BS", Sample)) %>%
+  mutate(Chip = ifelse(Chip %in% ChipA, "A", "B")) %>%
+  # group_by(Assay, Gene_target, TargetName, Organism, Sample, Group) %>%
+  dcast(Assay + Gene_target + TargetName + Organism + labelName + Sample + Group ~ Chip, value.var = "meanCt") %>%
+  mutate(Conc = NA) %>% 
+  # filter(Sample %in% unique(plot_intraassayCV$Sample)) %>%
+  filter(A < 30 & B < 30)
+
+
+##Fecal samples with standard spiked in
+repeatPlot_samples_w_Std <- repeatPlot_notStd %>%
+  filter(grepl("APG", Sample) | grepl("P8", Sample))
+ ##r^2 over all samples with standard spiked in
+(round(summary(lm(A~B, data = repeatPlot_samples_w_Std))$r.sq, 3))
+samples_w_std.r2 <- lm_eqn(repeatPlot_samples_w_Std)
+ 
+repeatPlot_samples_only <- anti_join(repeatPlot_notStd, repeatPlot_samples_w_Std)
+##r^2 over all samples
+(round(summary(lm(A~B, data = repeatPlot_samples_only))$r.sq, 3))
+samples.r2 <- lm_eqn(repeatPlot_samples_only)
+
+
+repeatPlot_Std <- stdMeans %>%
+  ungroup() %>%
+  filter(Chip != "MSU33" & !(Group %in% PoorChips)) %>%
+  filter(!(Chip == "MSU29" & TargetName == "18S_Giardia")) %>%
+  mutate(Chip = ifelse(Chip %in% ChipA, "A", "B")) %>%
+  dcast(Assay + Gene_target + TargetName + Organism + labelName + Sample + Group + Conc ~ Chip, value.var = "meanCt")
+
+(round(summary(lm(A~B, data = repeatPlot_Std))$r.sq, 3))
+std.r2 <- lm_eqn(repeatPlot_Std)
+
+annotation.DF <- data.frame(plotGroup = c("Std", "Fecal_w_std", "Fecal sample"), r2 = c(std.r2, samples_w_std.r2, samples.r2))
+########################################################################################
+#####  Investigate these further to find out specifically what is causing them.....
+########################################################################################
+sum(is.na(repeatPlot_Std$B)) 
+
+########################################################################################
+Pool1 <- c("STp", "STh", "eltA", "bfpA", "eaeA", "aggR", "ipaH", "stx1", "stx2", "PhHV")
+Pool2 <- c("cdtA", "CPE","tcdB", "ureA", "invA", "tcpA", "yadA")
+Pool3 <- c("16S_TotalArch", "ITS1_TotalFungi", "18S_Ehist", "18S_Blasto", "18S_Crypto", "18S_Giardia", "ITS1_Ascaris", "18S_Trich")
+
+allRepeatPlot <- repeatPlot_notStd %>%
+  select(labelName, TargetName, Sample, Group, Conc, A, B) %>%
+  rbind(repeatPlot_Std %>% select(labelName, TargetName, Sample, Group, Conc, A, B)) %>%
+  filter(!is.na(A) & !is.na(B)) %>%
+  filter(!(A == 99 | B == 99)) %>%
+  mutate(Ct.diff = abs(A - B),
+         fecalSample = ifelse(is.na(Conc), T, F),
+         Conc = ifelse(grepl("P8_D1", Sample), 100000, ifelse(grepl("P8_D4", Sample), 100, ifelse(grepl("P8_D5", Sample), 10, Conc))),
+         Conc = ifelse(grepl("APG1", Sample), 
+                       ifelse(TargetName %in% Pool1, 
+                              ifelse(TargetName %in% LOD100, 10000, 1000), 
+                              ifelse(TargetName %in% Pool2, 100, Conc)), 
+                       ifelse(grepl("APG2", Sample), 
+                              ifelse(TargetName %in% Pool2, 
+                                     ifelse(TargetName %in% LOD100, 10000, 1000), 
+                                     ifelse(TargetName %in% Pool3, 100, Conc)), 
+                              ifelse(grepl("APG3", Sample), 
+                                     ifelse(TargetName %in% Pool3, 
+                                            ifelse(TargetName %in% LOD100, 10000, 1000), 
+                                            ifelse(TargetName %in% Pool1, 100, Conc)), 
+                                     ifelse(grepl("APG4", Sample),
+                                            ifelse(TargetName %in% LOD100, 1000, 100), Conc)))), 
+         posControl = ifelse(grepl("APG", Sample) | !is.na(Conc), T, F),
+         plotGroup = factor(ifelse(fecalSample == F, "Std", ifelse(fecalSample == T & posControl == T, "Fecal_w_std", "Fecal sample")), levels = c("Std", "Fecal_w_std", "Fecal sample")),
+         Conc = ifelse(is.na(Conc), NA, Conc),
+         Conc = factor(Conc), 
+         shape = ifelse(labelName == "Total Bacteria (16S)", "TotBact", "Other"))
+
+
+summary(allRepeatPlot$Ct.diff[allRepeatPlot$fecalSample == T])
+
+
+allRepeatPlot.summary <- allRepeatPlot %>%
+  group_by(fecalSample, Conc) %>%
+  summarise(n = n(), 
+            medianDiff = median(Ct.diff, na.rm = T),
+            diff.25 = quantile(Ct.diff, na.rm = T, probs = 0.25),
+            diff.75 = quantile(Ct.diff, na.rm = T, probs = 0.75))
+  
+
+##Number of fecal samples included
+(length(unique(repeatPlot_notStd$Sample)))
+
+```
+
+
+```{r combinedRepeatabilityPlot}
+facetNames <- c(`Std` = "No fecal DNA", `Fecal_w_std` = "Fecal DNA with synthetic standard", `Fecal sample` = "Fecal DNA only")
+
+colorLabels <- c(10,expression(10^2), expression(10^3), expression(10^4), expression(10^5), expression(10^6), "Unknown")
+
+allRepeat <- ggplot() + 
+  geom_point(
+    data = allRepeatPlot, 
+    aes(x = A, y = B, color = Conc), 
+    shape = 20,
+    size = 2, 
+    alpha = 0.2
+    ) + 
+  scale_color_viridis_d(direction = 1, na.value = "grey65", labels = colorLabels) + 
+  # geom_point(
+  #   data = allRepeatPlot %>% filter(is.na(Conc)),
+  #   aes(x = A, y = B),
+  #   color = "black",
+  #   shape = 20,
+  #   size = 2, 
+  #   alpha = 0.2
+  # ) + 
+  # scale_color_manual("Input copies/rxn", values = c("#000000","#FF0000", "#0000FF","#FF8822","#8822FF","#228800")) + 
+  coord_fixed(ratio = 1, xlim = c(5,30), ylim = c(5,30), expand = FALSE) + 
+  labs(
+    y = expression(C[q]~ on~ replicate~ chip),
+    x = expression(C[q]),
+    color = "Input copies/reaction"
+  ) + 
+  scale_x_continuous(labels = c("", 10, 15, 20, 25, 30)) + 
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 3), nrow = 1, label.position = "bottom", label.vjust = 0)) +
+  facet_wrap(~plotGroup, labeller = as_labeller(facetNames)) + 
+  # ggpubr::theme_transparent(base_size = 16, base_family = "Helvetica")
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal",
+        panel.background = element_rect(fill = "transparent", colour = NA), # bg of the panel
+        plot.background = element_rect(fill = "transparent", colour = NA), # get rid of legend bg
+        legend.background = element_rect(fill = "transparent", colour = NA), # get rid of legend bg
+        legend.key = element_rect(fill = "transparent", colour = NA), # get rid of legend panel bg
+        rect = element_rect(fill = "transparent")) + 
+  geom_text(annotation.DF, mapping = aes(x = 20, y = 10, label = r2), parse = T) + 
+  geom_abline(intercept = 0, slope = 1, color = "black", linetype = "dashed")
+egg::tag_facet(allRepeat, tag_pool = c("A", "B", "C"))
+# plot_grid(repeat_Standards, repeat_Samples, align = "hv", rel_widths = c(1.75,1))
+```
+
+
+
+## Using 3 samples assayed 10 times for high and low concentration (on a single chip)
+```{r, cache=TRUE}
+#rep3Samples <- c("00806", "01507", "01908")
+rep3.df <- subset(data.eff, grepl("00806M11_P8", data.eff$Sample) | grepl("01507M11_P8", data.eff$Sample) | grepl("01908M11_P8", data.eff$Sample)) %>%
+  mutate(copyNum = ifelse(is.na(CtNew), NA, ifelse(CtNew == 99, 0, round(10^((CtNew - intercept)/slope), digits = 0))),
+         SampleID = substr(Sample, 1, 5))
+
+
+rep3.analysis <- rep3.df %>%
+  group_by(Gene_target, Assay, TargetName, labelName, Type, Dil, SampleID) %>%
+  summarise(meanCopy = mean(copyNum, na.rm = T), 
+            sdCopy = sd(copyNum, na.rm = T), 
+            CV = sdCopy/meanCopy*100, 
+            meanCt = mean(Ct), 
+            sdCt = sd(Ct, na.rm = T), 
+            n = length(copyNum), 
+            CVCt = sd(Ct, na.rm = T)/mean(Ct, na.rm = T)*100) %>%
+  ungroup() %>%
+  mutate(Dil = factor(Dil, levels = c("D4", "D1"), ordered = T)) %>%
+  filter(!grepl("MUS", Assay)) %>% 
+  filter(TargetName != "16S_TotalBact") %>% 
+  mutate(labelName = factor(labelName))
+##summary statistics for CV of copy number
+summary(rep3.analysis$CV[!(rep3.analysis$Assay %in% QC)])
+summary(rep3.analysis$CV[!(rep3.analysis$Assay %in% QC) & rep3.analysis$Dil == "D1"])
+summary(rep3.analysis$CV[!(rep3.analysis$Assay %in% QC) & rep3.analysis$Dil == "D4"])
+```
+
+##Data is not normally distributed, so report median and IQR
+```{r withinChip_repeatability}
+rep3 <- ggplot(
+  rep3.analysis,
+  aes(x = labelName, y = meanCopy, shape = SampleID, group = SampleID, color = Type)
+) + 
+  geom_errorbar(
+    aes(ymin = meanCopy - sdCopy, ymax = meanCopy + sdCopy), 
+    width = 0.5, 
+    color = "gray10", 
+    position = position_dodge(1)
+  ) + 
+  geom_point(
+    position = position_dodge(1),
+    size = 2
+  ) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = .5)) + 
+  scale_size_manual(values = c(2, 1), labels = c(10^5, 100)) + 
+  #scale_y_continuous(limits=c(10, 26)) + 
+  labs(
+    size = "Copy Number", 
+    shape = "Sample ID", 
+    color = "Assay Type", 
+    x = "", 
+    y = "Copies of target gene"
+  ) +  
+  scale_color_viridis(discrete = TRUE, labels = typeLabels, option = "plasma") + 
+  #scale_shape_manual(values = c(5,8,15)) + 
+  coord_flip() + 
+  facet_wrap(~Dil, scales = "free_x") + 
+  scale_x_discrete(limits = rev(levels(rep3.analysis$labelName)[1:24]))
+
+egg::tag_facet(rep3, x = Inf, y = -Inf)
+```
+
+###Comparing within-chip, between-chip, and between-instrument/operator variability
+```{r}
+precisionComparison <- rep3.analysis %>%
+  ungroup() %>%
+  select(labelName, CV) %>%
+  mutate(type = "Within-Chip") %>%
+  bind_rows(plot_intraassayCV %>% 
+              ungroup() %>%
+              select(labelName, CV) %>% 
+              mutate(type = "Between-Chip")) %>%
+  bind_rows(repro_all %>% select(labelName, CV) %>% mutate(type = "Across_instrument")) %>%
+  mutate(type = factor(type)) %>% 
+  filter(!labelName %in% c("Total Bacteria (16S)","Mus musculus (ACAA2)","Mus musculus (B2M)","Mus musculus (ESRRA)"))
+
+kruskal.test(CV~type, data = precisionComparison)
+pw.wilcox <- pairwise.wilcox.test(precisionComparison$CV, precisionComparison$type, p.adjust.method = "BH")
+pw.wilcox
+
+ggplot(precisionComparison) + geom_boxplot(aes(x = type, y = CV))
+```
+
+
+#Analytical Performance
+```{r sensitivity_specificity}
+df_APG <- data.eff %>%
+  filter(grepl("APG", Sample) & Chip == "MSU38") %>%
+  mutate(Copies = round(10^((CtNew-intercept)/slope), digits = 1)) %>%
+  group_by(Assay, labelName, Gene_target, TargetName, Organism, Type, Sample, Group) %>%
+  summarise(n = n(), 
+            nNA_99 = sum(CtNew == 99 | is.na(CtNew)), 
+            n99 = sum(CtNew == 99, na.rm = TRUE),
+            meanCt = ifelse(nNA_99 <= 0.5*n, mean(CtNew[CtNew < 90], na.rm = T), ifelse(n99 > 0.5*n, 99, NA)), 
+            meanCopies = ifelse(nNA_99 <= 0.5*n, mean(Copies[CtNew < 90], na.rm = T), ifelse(n99 > 0.5*n, 0, NA))) %>%
+  left_join(LOD %>% select(labelName, LOD)) %>%
+  mutate(detect = ifelse(is.na(meanCopies), NA, ifelse(meanCopies >= LOD, T, F)), 
+         APG = unlist(strsplit(Sample, split = "_"))[1])
+
+
+Pool1 <- c("STp", "STh", "eltA", "bfpA", "eaeA", "aggR", "ipaH", "stx1", "stx2", "PhHV")
+Pool2 <- c("cdtA", "CPE","tcdB", "ureA", "invA", "tcpA", "yadA")
+Pool3 <- c("16S_TotalArch", "ITS1_TotalFungi", "18S_Ehist", "18S_Blasto", "18S_Crypto", "18S_Giardia", "ITS1_Ascaris", "18S_Trich")
+
+
+highLow <- c("high","medium", "low")
+APG_design <- data.frame(TargetName = unique(data.eff$TargetName)) %>%
+  mutate(APG1 = ifelse(TargetName %in% Pool1, "high", ifelse(TargetName %in% Pool2, "low", "no")), 
+         APG2 = ifelse(TargetName %in% Pool2, "high", ifelse(TargetName %in% Pool3, "low", "no")),
+         APG3 = ifelse(TargetName %in% Pool3, "high", ifelse(TargetName %in% Pool1, "low", "no")),
+         APG4 = ifelse(TargetName %in% c(Pool1, Pool2, Pool3), "medium", "no")) %>%
+  left_join(df_APG) %>%
+  filter(TargetName != "16S_TotalBact") %>%
+  mutate(detectExpected = ifelse(APG == "APG1", APG1, ifelse(APG == "APG2", APG2, ifelse(APG == "APG3", APG3, ifelse(APG == "APG4", APG4, NA)))), 
+         Y_N = ifelse(detect == TRUE, ifelse(detectExpected %in% highLow, "11", "10"), ifelse(detectExpected %in% highLow, "01", "00")))
+
+
+APG_summary <- APG_design %>%
+  group_by(TargetName, Assay, Gene_target, labelName, detectExpected, Type) %>%
+  summarise(n = length(detect), 
+            nDetected = sum(detect==T, na.rm = T),
+            nNA = sum(is.na(detect)))
+
+APG_sens_spec <- APG_design %>%
+  group_by(TargetName, Assay, Gene_target, labelName, Type) %>%
+  summarise(sensitivity = round((sum(Y_N == "11", na.rm = T)/(sum(Y_N == "11", na.rm = T) + sum(Y_N == "01", na.rm = T)))*100, 0),
+            specificity = (sum(Y_N == "00", na.rm = T)/(sum(Y_N == "00", na.rm = T) + sum(Y_N == "10", na.rm = T)))*100)
+
+sens_spec_summary <- APG_sens_spec %>%
+  filter(!(grepl("MUS", Assay)), !grepl("Total", labelName))
+
+summary(sens_spec_summary$sensitivity)
+summary(sens_spec_summary$specificity)
+
+ggplot(APG_sens_spec, aes(x = labelName, y = sensitivity, fill = Type)) + 
+  geom_col() + scale_fill_viridis_d() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+  labs(y = "Sensitivity", x = "")
+
+
+
+
+LOD_sensSpec <- APG_sens_spec %>%
+  left_join(LOD %>% select(Assay, LOD, copies_g_stool))
+# saveRDS(LOD_sensSpec, "LOD_sensSpec.RDS")
+
+LOD_TAC <- data.frame(labelName = LOD$labelName, TAC.LOD = c(10^6, 10^5, 10^5, 10^5, 10^5, 10^6, 10^5, NA, 10^6, 10^6, 10^3, 10^3, 10^3, NA, 10^6, NA, NA, NA, NA,NA, NA,10^5, 10^5, 10^5, 10^6, 10^5, NA, NA)) %>%
+  left_join(LOD) %>%
+  mutate(copies_g_stool = as.numeric(copies_g_stool),
+         comparison = format(copies_g_stool/TAC.LOD, scientific=F))
+```
+
+
+## Sequencing for specificity check
+```{r}
+seqData <- read.table("/Users/JGrembi/Dropbox/01_PathogenChip/Benchmarks/Results/TE_SeqReady/WorkingResultsbyAssay/April2017/AssayCountsBySample/AssaySummary.txt") %>%
+  as.tibble() %>%
+    mutate(V1 = as.character(V1),
+           V2 = as.numeric(gsub("Unique:", "", V2)), 
+           V3 = as.numeric(gsub("Hits:", "", V3)), 
+           V4 = as.numeric(gsub("Samples:", "", V4))) %>%
+  dplyr::rename(Assay = V1, uniqueSeqs = V2, totalSeqs = V3, nSamples = V4) %>%
+  mutate(Assay = ifelse(Assay == "AAA16867.1_183_556_642", "AAA16867.1_183_556_F", ifelse(Assay == "YP_311504.1_698_1512_1582", "YP_311504.1_698_1512_F", ifelse( Assay == "NP_863557.1_1135_357_477", "NP_863557.1_1135_357_F", ifelse(Assay == "YP_003293997.1_1230_586_666", "YP_003293997.1_1230_586_F", ifelse(Assay == "YP_178099.1_234_435_615", "YP_178099.1_234_435_F", ifelse(Assay == "YP_473394.1_118_606_713","YP_473394.1_118_606_F", ifelse(Assay == "YP_002265705.1_2509_274_369", "YP_002265705.1_2509_274_F", ifelse(Assay == "ACA83731.1_1253_47_181", "ACA83731.1_1253_47_F", ifelse(Assay == "YP_008766666.1_180_230_323", "YP_008766666.1_180_230_F", ifelse(Assay == "AAG16259.1_135_423_529", "AAG16259.1_135_423_F", ifelse(Assay == "CAG34270.1_501_1488_1590", "CAG34270.1_501_1488_F", ifelse(Assay == "YP_006203851.1_1_44_209", "YP_006203851.1_1_44_F", ifelse(Assay == "AAA24653.1_2344_63_191", "AAA24653.1_2344_63_F", ifelse(Assay == "AAO19476.1_4254_154_250", "AAO19476.1_4254_154_F", ifelse(Assay == "ABR09935.1_214_40_175", "ABR09935.1_214_40_F", Assay))))))))))))))))
+
+
+sum(seqData$uniqueSeqs)
+sum(seqData$totalSeqs)
+summary(seqData$uniqueSeqs)
+
+
+seq.BLAST <- read_xlsx("/Users/JGrembi/Dropbox/01_PathogenChip/Benchmarks/Results/MSU/TE_Results.xlsx", sheet = 2, col_types = c("text", "text", "text","numeric","numeric","numeric","numeric","numeric","numeric","numeric","text"), na = c("NA")) %>%
+  as.tibble() %>%
+  mutate(pctCorrect = round(pctCorrect, 1),
+         nIncorrect = round(nIncorrect,0)) %>%
+  select(-Assay, -(Unique_Hits:NumSamples))
+
+seqs.ID <- LOD %>%
+  select(Assay, labelName, TargetName) %>%
+  left_join(seqData) %>%
+  mutate(labelName = factor(labelName, levels = c("EAEC (aggR)", "ST-ETEC (STh)", "ST-ETEC (STp)", "LT-ETEC (eltA)", "EPEC (bfpA)", "EPEC (eaeA)", "STEC (stx1)", "STEC (stx2)", "Campylobacter jejuni/coli (cdtA)", "Clostridium difficile (tcdB)", "Clostridium perfringens (CPE)", "Helicobacter pylori (ureA)", "Salmonella enterica (invA)", "Shigella/EIEC (ipaH)", "Vibrio cholerae (tcpA)", "Yersinia enterocolitica (yadA)", "Cryptosporidium (18S)", "Entamoeba histolytica (18S)", "Giardia (18S)", "Ascaris lumbricoides (ITS1)", "Trichuris trichiura (18S)", "Total Archaea (16S)", "Total Bacteria (16S)", "Total Fungi (ITS1)", "PhHV (gB)", "Mus musculus (ACAA2)", "Mus musculus (B2M)", "Mus musculus (ESRRA)"))) %>%
+  arrange(labelName) %>%
+  left_join(seq.BLAST)
+
+seqs.Summary <- seqs.ID %>%
+  summarise_at(vars(totalSeqs, uniqueSeqs, NumUnique_correctLength,nIncorrect,nUnder97), sum, na.rm = T)
+
+# Percent of sequences with correct match for organism and gene target in top BLASTn hit
+((seqs.Summary$NumUnique_correctLength-seqs.Summary$nIncorrect)/seqs.Summary$NumUnique_correctLength*100)
+
+# Percent of sequences with top hit at >=97% sequence identity
+((seqs.Summary$NumUnique_correctLength-seqs.Summary$nUnder97)/seqs.Summary$NumUnique_correctLength*100)
+```
+
+# Clinical Performance against TAC
+```{r}
+WAF_sampleMeans <- df_minusStdCurves %>%
+  left_join(eff.all)  %>%
+  filter(grepl("D2", Sample) | grepl("D3", Sample), !grepl("P", Sample)) %>%
+  mutate(Copies = 10^((CtNew-intercept)/slope)) %>%
+  group_by(Assay, labelName, Gene_target, TargetName, Organism, Sample, Group) %>%
+  summarise(n = n(), 
+            nNA_99 = sum(CtNew == 99 | is.na(CtNew)), 
+            n99 = sum(CtNew == 99, na.rm = TRUE),
+            WAF_meanCt = ifelse(nNA_99 < 0.5*n, mean(CtNew[CtNew < 90], na.rm = T), ifelse(n99 > 0.5*n, 99, NA)), 
+            WAF_meanCopies = ifelse(nNA_99 < 0.5*n, mean(Copies[CtNew < 90], na.rm = T), ifelse(n99 > 0.5*n, 0, NA))) %>%
+  left_join(eff.all %>% select(labelName, stdMinCt, stdMaxCt))
+
+
+```
+
+
+##Read in TAC data 
+## Get TAC results from WASH Benefits samples
+```{r, eval = FALSE}
+
+#############################################################################################
+#############################################################################################
+#############################################################################################
+
+
+########## Need to do data cleaning on te TAC results.  Get info from the other data cleaning file.  Also need to be more strict 
+
+#############################################################################################
+#############################################################################################
+#############################################################################################
+
+
+
+##Read in S01 results first
+path2S01 <- "/Users/JGrembi/Dropbox/03_WASH_B_PathogenAssessment/3_Data/2_ExcelExport/S01 Samples/"
+file.list.S01 <- list.files(path2S01, pattern = "\\.xls")
+
+for (file in file.list.S01) {
+  if (!exists("df.S01")) {
+    #file <- "2017-07-25 WASH TAC 01.xls"
+    df.S01 <- read_xls(paste0(path2S01, file), skip = 35)
+    df.S01$Card <- gsub(".xls", "", substring(file, 12))
+  }
+  if (exists("df.S01")) {
+    df.temp <- read_xls(paste0(path2S01, file), skip = 35)
+    df.temp$Card <- gsub(".xls", "", substring(file, 12))
+    df.S01 <- bind_rows(df.S01, df.temp)
+    rm(df.temp)
+  }
+}
+
+#Read in S04 results
+path2S04 <- "/Users/JGrembi/Dropbox/03_WASH_B_PathogenAssessment/3_Data/2_ExcelExport/"
+file.list.S04 <- list.files(path2S04, pattern = "\\.xls")
+
+for (file in file.list.S04) {
+  message(as.numeric(substr(file, 21,23)))
+  if (!exists("df.S04")) {
+    if (as.numeric(substr(file, 21,23)) > 154) {
+      df.S04 <- read_xls(paste0(path2S04, file), skip = 29)
+  } else {
+      df.S04 <- read_xls(paste0(path2S04, file), skip = 35)
+  }
+    
+    df.S04$Card <- gsub(".xls", "", substring(file, 12))
+  }
+  if (exists("df.S04")) {
+    if (as.numeric(substr(file, 21,23)) > 154) {
+      df.temp <- read_xls(paste0(path2S04, file), skip = 29)
+  } else {
+      df.temp <- read_xls(paste0(path2S04, file), skip = 35)
+  }
+    df.temp$Card <- gsub(".xls", "", substring(file, 12))
+    df.S04 <- bind_rows(df.S04, df.temp)
+    rm(df.temp)
+  }
+}
+
+df.S04 <- df.S04 %>%
+  select(Well:SPIKE)
+names(df.S01) == names(df.S04)
+
+df.S01 <- df.S01 %>%
+  select(Well:NOISE, NOAMP, Card, BADROX) %>%
+  mutate(CTFAIL = NA, 
+         SPIKE = NA)
+
+df.TAC <- rbind(df.S01, df.S04) 
+
+names(df.TAC) <- c("Well","WellPosition","Omit","SampleName","TargetName","Task","Reporter","Quencher","CT","CtMean","CtSD","Quantity","QuantityMean","QuantitySD",  "Y-Intercept","R(superscript2)","Slope","Efficiency","AutomaticCtThreshold","CtThreshold","AutomaticBaseline","BaselineStart","BaselineEnd","Comments","Custom1","Custom2","Custom3","Custom4","Custom5","Custom6","NOISE","NOAMP","Card","BADROX","CTFAIL","SPIKE")
+
+saveRDS(df.TAC, file = paste0(path2MainDir,"df.TAC.RDS"))
+```
+
+```{r}
+df.TAC <- readRDS(paste0(path2MainDir,"df.TAC.RDS"))
+```
+
+
+##Data cleaning
+
+```{r}
+namesTAC_WAF <- read.csv(paste0(path2MainDir,"TACvWafergen.csv"), stringsAsFactors = T, header = T)
+keepTAC <- as.vector(namesTAC_WAF$TargetName_TAC)
+
+df.TAC <- df.TAC %>%
+  mutate(NOISE = ifelse(is.na(NOISE), "N", NOISE),
+         NOAMP = ifelse(is.na(NOAMP), "N", NOAMP),
+         BADROX = ifelse(is.na(BADROX), "N", BADROX),
+         SPIKE = ifelse(is.na(SPIKE), "N", SPIKE), 
+         nbs = paste0(NOISE, BADROX, SPIKE), 
+         CtNew = as.numeric(ifelse(nbs == "YYY", NA, ifelse(nbs == "YYN", NA, ifelse(nbs == "NYY", NA, ifelse(CT == "Undetermined", 40, CT))))),
+         date = as.numeric(trimws(substr(trimws(Card), 10, 12))), 
+         SampleID = substr(SampleName, 1, 8)) %>%
+  filter(TargetName %in% keepTAC) %>%
+  left_join(namesTAC_WAF, by = c("TargetName" = "TargetName_TAC"))
+
+
+df.TAC.clean <- df.TAC %>%
+  mutate(CtNew = ifelse(Card == "WASH TAC 87 S04" & WellPosition == "B17", 40, CtNew),
+         SampleName = ifelse(SampleName == "BLANK AUG 03 2017", "BL001M14D2 02-08-2017", ##Rename Blank samples from beginning
+                      ifelse(SampleName == "Blank Aug 06 2017", "BL002M14D2 06-08-2017", 
+                      ifelse(SampleName == "Blank 17.09.2017", "BL003M14D2 17-09-2017", 
+                      ifelse(SampleName == "BLANK Sep 18 2017", "BL004M14D2 17-09-2017",
+                      ifelse(SampleName == "BLANK 20.09.2017", "BL005M14D2 20-09-2017",
+                      ifelse(SampleName == "BLANK 03.10.17","BL006M14D2 03-10-2017",
+                      ifelse(SampleName == "BL007M14D2 08.10.2017", "BL007M14D2 08-10-2017", 
+                      ifelse(SampleName == "BL008M14D2", "BL008M14D2 12-10-2017", 
+                      ifelse(SampleName == "BL009M14D2", "BL009M14D2 17-10-2017", 
+                      ifelse(SampleName == "BL011M14D2", "BL011M14D2 22-10-2017",
+                      ifelse(SampleName == "BL012M14D2", "BL012M14D2 23-10-2017",
+                      ifelse(SampleName == "BL013M14D2", "BL013M14D2 25-10-2017",
+                      ifelse(SampleName == "BL014M14D2", "BL014M14D2 29-10-2017",
+                      ifelse(SampleName == "BL015M14D2 301017", "BL015M14D2 30-10-2017",
+                      ifelse(SampleName == "BL05M14D2 07-02-2018", "BL051M14D2 07-02-2018",
+                      ifelse(SampleName == "BL019M14D3 08.11.2017 455", "BL019M14D3 08-11-2017",
+                      ifelse(SampleName == "BL035M14D2 31-12-17", "BL035M14D2 31-12-2017",
+                      ifelse(SampleName == "BL036M14D2  11-03-2018", "BL036M14D2 11-03-2018",
+                      ifelse(SampleName == "Sample 8", "BL001M11D3 24-07-2017",
+                      ifelse(SampleName == "BLANK 2017-7-27", "BL002M11D3 27-07-2017",
+                      ifelse(SampleName == "BLANK 2017-07-30", "BL003M11D3 30-07-2017",
+                      ifelse(SampleName == "BLANK AUG 10,17", "BL004M11D3 01-08-2017",
+                      ifelse(SampleName == "Blank Aug 07 2017", "BL005M11D3 07-08-2017",
+                      ifelse(SampleName == "Blank Aug 08 2017", "BL006M11D3 08-08-2017",
+                      ifelse(SampleName == "Blank Aug10 2017", "BL007M11D3 10-08-2017",
+                      ifelse(grepl(".", SampleName), gsub("[.]", "-", SampleName), 
+                      ifelse(SampleName == "766101M11D2", "66101M11D2",  #Correct typo in sample name
+                      ifelse(SampleName == "13805M14D", "13805M14D2",SampleName)))))))))))))))))))))))))))),
+         CtNew = ifelse(TargetName == "Campylobacter pan", ##Correct CT values based on melt curve anlaysis QC from excel file
+                        ifelse(SampleName == "05203M14D2", NA, 
+                               ifelse(SampleName %in% c("04808M14D2","26301M14D2","36404M14D2"), 40, 
+                                      ifelse(SampleName == "65103M14D2", 16, ifelse(SampleName == "31908M14D2", 26, CtNew)))), CtNew))
+
+##Look at NFW and Blanks
+df.negControls <- df.TAC.clean %>%
+  filter((SampleName == "NFW" | grepl("BL", SampleName)) & TargetName != "PhHV") 
+##All Clean, so no need to filter anything else out!
+
+
+## Apply PhHV filtering standards.
+###For any sample where PhHV was not detected below 35, the respective RNA or DNA targets for that sample are changed to NA as we can not trust the results.
+
+pathlist <- unique(df.TAC.clean$TargetName_WAF)
+DNAlist = pathlist[-grep("PhHV",pathlist)]
+
+#Make df wide to apply below function (for PhHV and MS2, where we have 2 values for each sample, this takes the mean, excluding NAs)
+df.TAC.clean.wide <- df.TAC.clean %>%
+  filter(SampleName != "NFW" | !grepl("BL", SampleName)) %>%
+  mutate(CtNew = ifelse(TargetName == "PhHV", CtMean, CtNew)) %>%
+  dcast(SampleID ~ TargetName_WAF, value.var = "CtNew", mean) %>%
+  tibble::column_to_rownames("SampleID")
+
+
+##For all DNA targets:
+##This leaves any NAs untouched
+##This leaves any rows where Ct for that target is <35 untouched 
+##This leaves any results where Ct for the target is >=35 and PhHV is <35 untouched
+##This only changes results where Ct for the target is >= 35 & PhHV is >=35 (or the spike-in control is NA) to NA
+for(l in DNAlist) {
+  for(r in 1:nrow(df.TAC.clean.wide)) {
+    if(is.na(df.TAC.clean.wide[r,l]) == FALSE & df.TAC.clean.wide[r,l] <= 35) {df.TAC.clean.wide[r,l] = ifelse(df.TAC.clean.wide[r,"PhHV"] < 35, df.TAC.clean.wide[r,l], NA)}
+  }
+  # print(l)
+}
+
+TAC_wash <- df.TAC.clean.wide %>% 
+  tibble::rownames_to_column("SampleID") %>%
+  melt() %>%
+  dplyr::rename(TargetName = variable, TAC_Ct = value) %>%
+  mutate(TAC_detect = ifelse(is.na(TAC_Ct), NA, ifelse(TAC_Ct <=35, 1, 0)))
+
+```
+
+###TAC copy numbers, adjusted for spike-in
+```{r Read in Standard curve data, eval = F}
+
+## Read in Standard curve data
+excelFilepath <- "/Users/JGrembi/Dropbox/03_WASH_B_PathogenAssessment/3_Data/2_ExcelExport/StandardCurves/"
+list.files(excelFilepath)
+std.curve.all <- data.frame(NULL)
+for (file in list.files(excelFilepath, pattern = "\\.xls$")) {
+  message(file)
+  if (as.numeric(substr(file, 1,4)) < 2018 ) {
+      df <- read_xls(paste0(excelFilepath, file), skip = 35) 
+  } else {
+    df <- read_xls(paste0(excelFilepath, file), skip = 29)
+  }
+  df$Date <- substring(file, 1, 10) #get date that standard curve was run
+  df$Card <- ifelse(grepl("-01", file), 1, ifelse(grepl("-02", file), 2, 3)) #each time a standard curve is run, it's done over 3 separate cards. This variable tells us which card.
+  std.curve.all <- bind_rows(std.curve.all, df)
+}
+  
+names(std.curve.all) <- c("Well","WellPosition","Omit","SampleName","TargetName","Task","Reporter","Quencher","CT","CtMean","CtSD","Quantity","QuantityMean","QuantitySD",  "AutomaticCtThreshold","CtThreshold","AutomaticBaseline","BaselineStart","BaselineEnd","Comments","Y-Intercept","R(superscript2)","Slope","Custom1","Custom2","Custom3","Custom4","Custom5","Custom6","Date","Card","NOISE")
+
+saveRDS(std.curve.all, paste0(path2MainDir, "std.curve.all.RDS"))
+```
+
+
+```{r}
+std.curve.all <- readRDS(paste0(path2MainDir, "std.curve.all.RDS"))
+```
+
+
+
+```{r, fig.height=12, fig.width=12}
+##For some reason the standard curve TAC didn't include the Giardia assay.  Jie found another standard curve run in Bangladesh in Oct 2017, which did include it.  I use that below, but I'm suspect as this might have been run on the other instrument (not the Viia7 where all of our samples were run)
+extraGiardia <- data.frame(TargetName = "Giardia", fitStd = NA, summary = NA, intercept = 33.62803, slope = -3.2963, eff = (10^(-1/-3.2963) - 1), r.sq = NA, minCT = NA, maxCT = NA) #Date = "2017-11-01",
+
+##Do linear fit of standard curve points
+std.curve.df <- std.curve.all %>%
+  filter(SampleName %in% c("Std 01", "Std 02", "Std 03", "Std 04", "Std 05", "STD-01", "STD-02", "STD-03", "STD-04", "STD-05")) %>%
+  mutate(std = as.numeric(substr(SampleName, 5, 6)),
+         Conc = ifelse(TargetName %in% keepTAC, (5*10^5)/(10^(std-1)), NA), # 5x10^5 for DNA targets (lowest concentration is 50), 5x10^6 for RNA targets (lowest concentration is 500)
+         CT = ifelse(CT == "Undetermined", NA, as.numeric(CT))) %>% 
+  filter(!is.na(Conc)) 
+
+max_min_stdCurve <- std.curve.df %>%
+  group_by(TargetName) %>%
+  summarise(minCT = min(CT, na.rm = TRUE), 
+            maxCT = max(CT, na.rm = TRUE))
+
+options(scipen = 999)
+
+#####Decided to use average of all standard curves for the analysis.  I will Also to the same for WaferGen data.
+fit.curves <- std.curve.df %>% 
+  #filter(TargetName %in% c("Sapovirus", "MS2", "PhHV", "ETEC_STh")) %>%
+  group_by(TargetName) %>% #group_by(Date, TargetName) %>%
+  do(fitStd = lm(CT ~ log10(Conc), data = .), 
+     summary = summary(lm(CT ~ log10(Conc), data = .))) %>%
+  mutate(intercept = as.numeric(unlist(fitStd)[1]), 
+         slope = as.numeric(unlist(fitStd)[2]), 
+         eff = 10^(-1/slope) - 1, 
+         r.sq = unlist(summary)["adj.r.squared"]) %>%
+  left_join(max_min_stdCurve) %>%
+  rbind(extraGiardia)
+
+```
+
+```{r}
+df.copyNum.allOther <- df.TAC.clean %>%
+  filter(!grepl("NFW", SampleName), !grepl("BL", SampleName)) %>%
+  filter(TargetName != "Giardia") %>% 
+  left_join(fit.curves %>% select(-fitStd, -summary), by = "TargetName")
+  
+
+df.copyNum.Giardia <- df.TAC.clean %>%
+  filter(!grepl("NFW", SampleName), !grepl("BL", SampleName)) %>%
+  filter(TargetName == "Giardia") %>%
+  left_join(fit.curves %>% select(-fitStd, -summary), by = "TargetName")
+ # Calculate copy number from slope and intercept
+df.copyNum <- rbind(df.copyNum.allOther, df.copyNum.Giardia) %>%
+  mutate( #Set values of Ct = 40 to NA, these were undetermined in the original data
+    copyNum = ifelse(TargetName == "PhHV" & CtNew > 40, NA, round(10^((CtNew - intercept)/slope), digits = 1)), 
+    minCopyNum = round(10^((maxCT - intercept)/slope), digits = 1),
+    maxCopyNum = round(10^((minCT - intercept)/slope), digits = 1), 
+    copyNum.new = ifelse(copyNum == 0, 0, ifelse(copyNum < maxCopyNum, ifelse(copyNum > minCopyNum, copyNum, NaN), NaN))) %>%
+  distinct(.keep_all = TRUE)
+
+ # Copy number of positive controls spiked in:
+phhv.copy_uL <- (2*10^6)/200 #copies/uL DNA
+
+
+ # Determine DNA/RNA extraction and amplification efficiency for each sample
+extraction.efficiency <- df.copyNum %>%
+  filter(TargetName == "PhHV") %>%
+  dcast(., SampleName ~ TargetName, value.var = "copyNum", mean) %>%
+  mutate(DNA.eff = PhHV/(phhv.copy_uL*0.2))
+summary(extraction.efficiency$DNA.eff)
+
+df.copyNum.phhv <- df.copyNum %>%
+  filter(TargetName %in% c("PhHV")) %>%
+  mutate(CtNew = ifelse(CtNew == 40, NA, CtNew)) %>%
+  group_by(SampleName, SampleID, TargetName, TargetName_WAF) %>%
+  summarise(n = n(), 
+            copyNum = mean(copyNum, na.rm = T),
+            CtNew = mean(CtNew, na.rm = T)) %>%
+  ungroup() %>%
+  select(-n)
+
+df.copyNum.eff <- df.copyNum %>%
+  filter(!TargetName %in% c("PhHV")) %>%
+  select(SampleName, SampleID, TargetName, TargetName_WAF, copyNum, CtNew) %>%
+  bind_rows(df.copyNum.phhv) %>%
+  # left_join(extraction.efficiency %>% select(-PhHV)) %>%
+  mutate(copyNum.new = ifelse(copyNum == 0, 0, ifelse(CtNew > 35, 0, copyNum/0.2*1000)),
+         # copyNum.new = ifelse(copyNum == 0, 0, ifelse(CtNew > 35, 0, copyNum/DNA.eff)),
+         log.copyNum = ifelse(copyNum.new == 0, 0, ifelse(CtNew > 35, 0, ifelse(copyNum.new == Inf, NA, log10(copyNum.new)))), 
+         TargetName = factor(TargetName)) 
+
+TAC_wash <- TAC_wash %>%
+  left_join(df.copyNum.eff %>% select(SampleID, TargetName_WAF, copyNum, copyNum.new, log.copyNum) %>% rename(TargetName = TargetName_WAF)) %>%
+  mutate(copyNum.new = ifelse(TAC_detect == 0, 0, copyNum.new))
+```
+
+
+## Compare WaferGen and TAC results
+```{r}
+WAF.extraction.efficiency <- WAF_sampleMeans %>%
+  filter(TargetName == "PhHV") %>%
+  mutate(DNA.eff = WAF_meanCopies/(phhv.copy_uL*0.0125)) %>%
+  ungroup()
+summary(WAF.extraction.efficiency$DNA.eff)
+
+
+
+df.compare <- WAF_sampleMeans %>%
+  filter(!Sample %in% c("11001M14D3", "44108M14D3", "38405M14D3", "13307M14D3", "12905M14D3")) %>%
+  mutate(SampleID = substr(Sample, 1, 8),
+         WAF_detect = ifelse(TargetName == "PhHV" & WAF_meanCt < 30, 1, ifelse(TargetName %in% LOD100, ifelse(WAF_meanCt < 30 & WAF_meanCopies > 100, 1,0), ifelse(WAF_meanCt < 30 & WAF_meanCopies > 10, 1, 0))),
+         WAF_copies.effCorrected = ifelse(WAF_detect == 0, 0, WAF_meanCopies/0.0125*1000),
+         # WAF_copies.effCorrected = ifelse(WAF_detect == 0, 0, ifelse(DNA.eff == 0, NA, WAF_meanCopies/(phhv.copy_uL*0.0125))),
+         WAF_log10copies = ifelse(WAF_copies.effCorrected == 0, 0, ifelse(WAF_copies.effCorrected == Inf, NA, log10(WAF_copies.effCorrected)))) %>% ##############Possibly redefine detection based on LOD
+  inner_join(TAC_wash) %>%
+  mutate(Result = as.character(paste0(TAC_detect, WAF_detect)),
+         TAC_detect = factor(TAC_detect, levels = c(1,0)),
+         WAF_detect = factor(WAF_detect, levels = c(1,0))) %>%
+  filter(!is.na(TAC_detect) & !is.na(WAF_detect))
+
+length(unique(df.compare$Sample))
+  ##Percent of samples with concordant detection between platforms  
+sum(df.compare$Result == "00" | df.compare$Result == "11") / sum(!grepl("NA", df.compare$Result))
+  # Of concordant samples, this many were positive detection
+sum(df.compare$Result == "11")/sum(df.compare$Result == "00" | df.compare$Result == "11")
+  # And this many were negative detection
+sum(df.compare$Result == "00")/sum(df.compare$Result == "00" | df.compare$Result == "11")
+
+sum(df.compare$Result == "01" | df.compare$Result == "10")
+
+
+sum(df.compare$Result == "10")/length(df.compare$Result)
+  sum(df.compare$Result == "10" | df.compare$Result == "11")
+actual_values <- df.compare$TAC_detect 
+predicted_values <- df.compare$WAF_detect 
+(conf_matrix <- table(predicted_values, actual_values))
+x <- epi.tests(conf_matrix)
+x
+
+y <- epiR::epi.kappa(conf_matrix, method = "fleiss")
+print(y)
+
+
+
+SenSpec_wash <- df.compare %>%
+  group_by(TargetName) %>%
+  summarise(sensitivity = sum(Result == "11")/(sum(Result == "11") + sum(Result == "10")),
+            specificity = sum(Result == "00")/(sum(Result == "00") + sum(Result == "01")),
+            nPos = sum(TAC_detect == 1, na.rm = T),
+            nNA_WAF = sum(is.na(WAF_meanCt)),
+            nNA_TAC = sum(TAC_Ct == 40)
+  )
+
+
+```
+
+
+##Check Ct values from TAC vs WaferGen
+
+```{r, echo = F}
+Ct.Cutoff <- data.frame(organism = c("Adenovirus 40/41", "Sapovirus", "Astrovirus", "Campylobacter jejuni/coli", "ETEC_ST", "Norovirus GII", "Shig_EIEC", "tEPEC", "Rotavirus", "Cryptosporidium", "Isospora", "Strongyloides", "E.histolytica", "V.cholerae", "H.pylori", "Salmonella", "Cyclospora"),
+                        TargetName = c(NA, NA, NA, "cdtA", "STh", NA, "ipaH", "bfpA", NA, "18S_Crypto", NA, NA, "18S_Ehist", "tcpA", "ureA", "invA", NA),
+MALED = c(24.0, 26.1, 23.7, 21.8, 23.5, 27.2, 28.8, 17.8, 31.7, 22.0, 33.8, 30.4, 30.0, 32.0,NA, NA, NA),
+GEMS = c(22.7, NA, 22.2, 15.4, 22.8,  23.4, 27.9, 16.0, 32.6, 24.0, NA, NA, 32.8, 33.8, 30.8, 30.7, 29.6)) %>%
+  mutate(OR_Ct = round(ifelse(is.na(MALED), GEMS, ifelse(is.na(GEMS), NA, (MALED+GEMS)/2)), 1))
+
+df.compare_OR <- merge(df.compare, Ct.Cutoff, by = "TargetName", all.x = T) %>%
+  mutate(TargetName = factor(TargetName, levels = c("aggR","STh","STp","eltA", "bfpA","eaeA","stx1","stx2","ipaH","tcpA","invA","yadA","ureA","cdtA","CPE","tcdB","18S_Crypto", "18S_Ehist","18S_Giardia","ITS1_Ascaris","18S_Trich","16S_TotalArch", "16S_TotalBact", "ITS1_TotalFungi","PhHV","ACAA2","B2M","ESRRA"))) #%>%
+  # mutate(labelName = factor(TargetName, levels = c("aggR","STh","STp","eltA", "bfpA","eaeA","stx1","stx2","cdtA","tcdB","CPE","ureA","invA","ipaH", "tcpA","yadA","18S_Blasto","18S_Crypto", "18S_Ehist","18S_Giardia","ITS1_Ascaris","18S_Trich","16S_TotalArch", "16S_TotalBact", "ITS1_TotalFungi","PhHV","ACAA2","B2M","ESRRA"), labels = c("EAEC (aggR)", "ST-ETEC (STh)", "ST-ETEC (STp)", "LT-ETEC (eltA)", "EPEC (bfpA)", "EPEC (eaeA)", "STEC (stx1)", "STEC (stx2)", "C. jejuni/coli (cdtA)", "C. perfringens (CPE)", "C. difficile (tcdB)", "H. pylori (ureA)", "Salmonella enterica (invA)", "Shigella/EIEC (ipaH)", "V. cholerae (tcpA)", "Y. enterocolitica (yadA)", "Blastocystis (18S)", "Cryptosporidium (18S)", "E. histolytica (18S)", "Giardia (18S)", "Ascaris (ITS1)", "Trichuris (18S)", "Total Archaea (16S)", "Total Bacteria (16S)", "Total Fungi (ITS1)", "PhHV (gB)", "Mus musculus (ACAA2)", "Mus musculus (B2M)", "Mus musculus (ESRRA)")))
+  
+
+
+instancesBelowAF <- df.compare_OR %>%
+  filter(!is.na(OR_Ct)) %>%
+  filter(TAC_detect == 1) %>%
+  summarise(n = n(), 
+            nBelowCutoff = sum(WAF_detect == 0 & TAC_Ct < OR_Ct, na.rm = T), 
+            nWAF = sum(WAF_detect == 1, na.rm = T))
+
+keepForTACvWafPlot <- SenSpec_wash %>%
+  filter(nPos > 0) %>%
+  select(TargetName) %>%
+  as.vector()
+
+
+TACvWaferGen <- df.compare_OR %>% 
+  filter((TAC_detect == 1 | WAF_detect == 1) & TargetName %in% unlist(keepForTACvWafPlot)) %>%
+  mutate_if(is.factor, factor) %>%
+  mutate(WAF_detect = factor(WAF_detect, levels = c(1,0)),
+         TAC_detect = factor(TAC_detect, levels = c(1,0)),
+         labelName = factor(TargetName, levels = c("aggR","STh","STp","eltA", "bfpA","eaeA","stx1","stx2","cdtA","tcdB","ureA","invA","ipaH", "tcpA","18S_Crypto", "18S_Giardia","ITS1_Ascaris","18S_Trich","PhHV"), labels = c("EAEC (aggR)", "ST-ETEC (STh)", "ST-ETEC (STp)", "LT-ETEC (eltA)", "EPEC (bfpA)", "EPEC (eaeA)", "STEC (stx1)", "STEC (stx2)", "C. jejuni/coli (cdtA)", "C. difficile (tcdB)", "H. pylori (ureA)", "Salmonella enterica (invA)", "Shigella/EIEC (ipaH)", "V. cholerae (tcpA)", "Cryptosporidium (18S)", "Giardia (18S)", "Ascaris (ITS1)", "Trichuris (18S)", "PhHV (gB)")))
+
+##Only 241 samples, what happened to the other 42??
+length(unique(TACvWaferGen$Sample))
+```
+
+```{r TAC_v_WafergenPlot, echo = F, fig.height=6}
+TAC_v_WafergenPlot <- ggplot(TACvWaferGen %>% 
+                               filter(TAC_detect == 1), 
+                             aes(x = labelName, 
+                                 y = TAC_Ct)
+) + 
+    geom_jitter(aes(color = WAF_detect, shape = WAF_detect, group = WAF_detect), 
+                alpha = 0.4,
+                size = 2,
+                position = position_jitterdodge()) +
+  scale_color_manual(name = "",
+                     values = c("#1878A5", "black"),
+                     labels = c("nL-qPCR +", "nL-qPCR -")) +
+  scale_shape_manual(name = "",
+                     values = c(16,4), 
+                     labels = c("nL-qPCR +", "nL-qPCR -")) + 
+  labs(x = "", 
+    y = expression(TAC~ C[q])) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4),
+        legend.position=c(.6,.1),
+        legend.direction = "horizontal",
+        panel.background = element_rect(fill = "transparent", colour = NA), # bg of the panel
+        plot.background = element_rect(fill = "transparent", colour = NA), # get rid of legend bg
+        legend.background = element_rect(fill = "transparent", colour = NA), # get rid of legend bg
+        legend.box.background = element_rect(colour = "black"),
+        legend.key = element_rect(fill = "transparent", colour = NA), # get rid of legend panel bg
+        rect = element_rect(fill = "transparent", colour = NA)) + 
+  geom_errorbar(aes(x = labelName, ymin = OR_Ct, ymax = OR_Ct), color = "firebrick3", width = 0.6, size = 1.2) +
+  annotate(geom = "text", x = .8, y = 35, label = "(A)", fontface = "bold")
+TAC_v_WafergenPlot
+```
+
+```{r Wafergen_v_TACPlot, echo = F, fig.height=6}
+Wafergen_v_TACPlot <- ggplot(TACvWaferGen %>% 
+         filter(WAF_detect == 1), 
+       aes(x = labelName, 
+           y = WAF_meanCt)) + 
+    geom_jitter(aes(color = TAC_detect, shape = TAC_detect, group = TAC_detect), 
+                alpha = 0.4,
+                size = 2,
+                position = position_jitterdodge()) +
+  scale_color_manual(name = "",
+                     values = c("darkmagenta", "black"),
+                     labels = c("TAC +", "TAC -")) +
+  scale_shape_manual(name = "",
+                     values = c(15,13),
+                     labels = c("TAC +", "TAC -")) +
+  labs(x = "", 
+    y = expression(nL-qPCR~ C[q])) +  
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.4),
+        legend.position=c(.8,.1),
+        legend.direction = "horizontal",
+        panel.background = element_rect(fill = "transparent", colour = NA), # bg of the panel
+        plot.background = element_rect(fill = "transparent", colour = NA), # get rid of legend bg
+        legend.background = element_rect(fill = "transparent", colour = NA), # get rid of legend bg
+        legend.box.background = element_rect(colour = "black"),
+        legend.key = element_rect(fill = "transparent", colour = NA), # get rid of legend panel bg
+        rect = element_rect(fill = "transparent", colour = NA)) +
+  annotate(geom = "text", x = .8, y = 30, label = "(B)", fontface = "bold")
+Wafergen_v_TACPlot
+```
+
+
+
+```{r WAF_v_TAC_both, fig.height=10}
+plot_grid(TAC_v_WafergenPlot, Wafergen_v_TACPlot, 
+          ncol = 1,
+          axis = "l")
+```
+
+
+```{r}
+BinnedPPA_TAC.Conc <- TACvWaferGen %>%
+  mutate(TAC.Conc.bin = factor(ifelse(is.na(log.copyNum), NA, ifelse(log.copyNum < 5, 5, ifelse(log.copyNum < 7, 6, 7 ))), levels = c(5,6,7))) %>%
+  group_by(TAC.Conc.bin) %>%
+  summarise(n = n(),
+            pos.percent.agreement = sum(Result == "11")/(sum(Result == "11") + sum(Result == "10")))
+
+BinnedPPA_TAC.Conc
+
+
+TAC.cq <- TACvWaferGen %>%
+  filter(Result == "10") 
+
+summary(TAC.cq$TAC_Ct)
+
+
+cutoffEval <- df.compare_OR %>%
+  mutate(belowCutoff = ifelse(TAC_Ct < OR_Ct, T, F)) %>%
+  filter(belowCutoff & Result == "10")
+```
+
+##Bland-Altman plot
+```{r bland-altman_plot}
+
+blandA.plots <- df.compare %>%
+  ungroup() %>%
+  # filter(labelName == "EPEC (eaeA)") %>%
+  filter(WAF_detect == 1, TAC_detect == 1) %>%
+  select(labelName, WAF_log10copies, log.copyNum) %>%
+  mutate(WAF_logCopy.gStool = WAF_log10copies,
+         TAC_logCopy.gStool = log.copyNum)
+
+# blandr::blandr.draw(blandA.plots$WAF_log10copies, blandA.plots$log.copyNum, method1name = "nL-qPCR", method2name = "TAC", plotTitle = "") + labs(y = "nL-qPCR - TAC (log10 copies/reaction)", x = "Mean of nL-qPCR and TAC (log10 copies/reaction)")
+
+blandr::blandr.draw(blandA.plots$WAF_logCopy.gStool, blandA.plots$TAC_logCopy.gStool, method1name = "nL-qPCR", method2name = "TAC", plotTitle = "") + labs(y = "Difference between nL-qPCR and TAC (log10 copies/g stool)", x = "Mean of nL-qPCR and TAC (log10 copies/g stool)")
+
+BlandAlt.data <- blandr::blandr.statistics(blandA.plots$WAF_logCopy.gStool, blandA.plots$TAC_logCopy.gStool)
+blandr::blandr.plot.normality(BlandAlt.data)
+blandr::blandr.plot.qq(BlandAlt.data)
+# blandr::blandr.output.text(blandA.plots$WAF_log10copies, blandA.plots$log.copyNum)
+blandr::blandr.output.text(blandA.plots$WAF_logCopy.gStool,blandA.plots$TAC_logCopy.gStool)
+
+
+```
+
+```{r individual_BalndAltmanPlots, fig.height=10, fig.width = 14}
+plot_individual_BA <- function(assayName) {
+  df <- blandA.plots %>%
+    filter(labelName == assayName)
+  blandr::blandr.draw(df$WAF_logCopy.gStool, df$TAC_logCopy.gStool, plotTitle = assayName) + labs(y = expression(atop("Difference between nL-qPCR and TAC", "(log10 copies/g stool)")), x = "Mean of nL-qPCR and TAC (log10 copies/g stool)") +
+    theme(axis.title=element_text(size=10)) + ylim(-3.5, 2.5) + xlim(5.5,10)
+}
+
+
+
+Assays <- unique(blandA.plots$labelName) 
+Assays <- setdiff(Assays, c("Helicobacter pylori (ureA)", "Salmonella enterica (invA)", "PhHV (gB)", "Cryptosporidium (18S)", "Clostridium difficile (tcdB)", "STEC (stx1)", "STEC (stx2)"))
+names(Assays) <- Assays
+
+individualBA.plots <- lapply(Assays, plot_individual_BA)
+
+
+plot_grid(individualBA.plots[["EAEC (aggR)"]], individualBA.plots[["ST-ETEC (STh)"]], individualBA.plots[["ST-ETEC (STp)"]], individualBA.plots[["LT-ETEC (eltA)"]], individualBA.plots[["EPEC (bfpA)"]], individualBA.plots[["EPEC (eaeA)"]], individualBA.plots[["Campylobacter jejuni/coli (cdtA)"]],  individualBA.plots[["Shigella/EIEC (ipaH)"]], individualBA.plots[["Giardia (18S)"]], ncol = 3)
+
+```
+
+
+
+### Bland-Altman by target gene
+```{r, message = F, echo = F, }
+byTarget.blandAltman <- blandA.plots %>%
+  group_by(labelName) %>%
+  summarise(n = n(),
+            bias = round(blandr::blandr.statistics(WAF_logCopy.gStool, TAC_logCopy.gStool)$bias, 1),
+            bias.ci = paste0("(", round(blandr::blandr.statistics(WAF_logCopy.gStool, TAC_logCopy.gStool)$biasLowerCI, 1), ", ", round(blandr::blandr.statistics(WAF_logCopy.gStool, TAC_logCopy.gStool)$biasUpperCI, 1), ")"), 
+            # bias.l95 = blandr::blandr.statistics(WAF_logCopy.gStool, TAC_logCopy.gStool)$biasLowerCI, 
+            upperLOA = round(blandr::blandr.statistics(WAF_logCopy.gStool, TAC_logCopy.gStool)$upperLOA, 1),
+            upperLOA.ci = paste0("(", round(blandr::blandr.statistics(WAF_logCopy.gStool, TAC_logCopy.gStool)$upperLOA_lowerCI, 1), ", ", round(blandr::blandr.statistics(WAF_logCopy.gStool, TAC_logCopy.gStool)$upperLOA_upperCI, 1), ")"),
+            lowerLOA = round(blandr::blandr.statistics(WAF_logCopy.gStool, TAC_logCopy.gStool)$lowerLOA, 1),
+            lowerLOA.ci = paste0("(", round(blandr::blandr.statistics(WAF_logCopy.gStool, TAC_logCopy.gStool)$lowerLOA_lowerCI, 1), ", ", round(blandr::blandr.statistics(WAF_logCopy.gStool, TAC_logCopy.gStool)$lowerLOA_upperCI, 1), ")"))
+
+
+table3 <- byTarget.blandAltman %>%
+  mutate(bias.est = ifelse(!grepl("NA", bias.ci), paste0(bias, " ", bias.ci), bias), 
+         LOA.lower = ifelse(is.na(lowerLOA), NA, paste0(lowerLOA, " ", lowerLOA.ci)),
+         LOA.upper = ifelse(is.na(upperLOA), NA, paste0(upperLOA, " ", upperLOA.ci))) %>%
+  select(-bias, -bias.ci, -upperLOA, -upperLOA.ci, -lowerLOA, -lowerLOA.ci) %>%
+  filter(labelName != "PhHV (gB)") %>%
+  arrange(labelName)
+
+kable(table3 %>% select(-LOA.lower, -LOA.upper), format = "latex", booktabs = T, col.names = c("Pathogen (gene target)", "n", "Bias (95% CI)")) %>%
+  # save_kable(keep_tex = T, file = "table3.latex")#%>% "Lower LOA (95% CI)", "Upper LOA (95% CI)"
+  # add_footnote(label = c("NaN = Not a number, due to n = 1"), notation = "none", threeparttable = TRUE) %>%
+  kable_styling(latex_options = "scale_down") %>%
+  add_footnote(label = c("NaN = Not a number, due to n = 1"), notation = "none", threeparttable = TRUE)
+
+```
+
+
+##Look at NTC contamination on chips with fecal samples
+```{r}
+
+NFW.contam <- chipData_target %>%
+  filter(Sample == "NTC", CtNew != 99) %>%
+  filter(CtNew < 30, !(Assay %in% MUS)) %>%
+  # filter(grepl("MSU", Chip)) %>%
+  left_join(eff) %>%
+  mutate(Copies = round(10^((CtNew-intercept)/slope), digits = 1)) 
+  
+NFW.contam.summary <- NFW.contam %>%
+  group_by(TargetName, labelName, operator) %>%
+  summarise(n = n(),
+            medianCopies = median(Copies, na.rm = T),
+            pct.25 = quantile(Copies, probs = 0.25, na.rm = T), 
+            pct.75 = quantile(Copies, probs = 0.75, na.rm = T), 
+            meanCt = mean(CtNew, na.rm = T))
+
+
+totalNFW.16S <- chipData_target %>%
+  filter(Sample == "NTC") %>%
+  group_by(TargetName) %>%
+  summarise(nTot = n()) %>%
+  right_join(NFW.contam.summary) %>%
+  mutate(contam.pct = n/ nTot*100)
+
+totalNFW.other <- totalNFW.16S %>%
+  filter(labelName != "Total Bacteria (16S)") %>%
+  ungroup() %>%
+  summarise(nTotal = sum(nTot, na.rm = T), 
+            nContam = sum(n, na.rm = T),
+            medianContam = median(medianCopies, na.rm = T), 
+            pct.25 = quantile(medianCopies, probs = 0.25, na.rm = T),
+            pct.75 = quantile(medianCopies, probs = 0.75, na.rm = T))
+
+
+```
+
+
+```{r, include = F}
+# NFW_MUS <- chipData_target %>%
+#   # filter(Sample == "NTC") %>%
+#   filter(Sample %in% df.compare$Sample) %>%
+#   filter(Assay %in% QC, CtNew < 90) #%>%
+#   group_by(labelName) %>%
+#   summarise(n = n(),
+#             minCt = min(CtNew, na.rm = T), 
+#             maxCt = max(CtNew, na.rm = T))
+# 
+
+```
+
+
+
+##Make Table 2
+```{r, results = 'latex'}
+## Add in newly calculated LOD
+table2 <- Assay_Comparison %>%
+  ungroup() %>%
+  select(Type, Organism, Gene_target, TargetName, labelName, n, Eff_CV) %>%
+  left_join(LOD_sensSpec) %>%
+  left_join(RepeatCV %>% select(TargetName, CV_Num)) %>%
+  left_join(reproducibilityCV) %>%
+  ungroup() %>%
+  mutate(Eff_CV = ifelse(Organism == "Mus musculus", NA, Eff_CV),
+         LOD = ifelse(Organism == "Mus musculus", NA, LOD),
+         copies_g_stool = ifelse(Organism == "Mus musculus", NA, copies_g_stool),
+         sensitivity = ifelse(Organism == "Mus musculus", NA, sensitivity),
+         specificity = ifelse(Organism == "Mus musculus", NA, round(specificity, 0)), 
+         LOD_final = ifelse(is.na(LOD), NA, paste0(copies_g_stool, " (", LOD, ")")))%>%
+  arrange(labelName) %>%
+  select(labelName, Eff_CV, LOD_final, CV_both, CV_Num, sensitivity, specificity)
+
+# rownames(table2a) <- NULL
+names(table2) <- c("Organism (gene target)", paste0("Efficiency\n \\% (CV",footnote_marker_alphabet(1),")"), paste0("LOD", footnote_marker_alphabet(2), "\n(copies/g or reaction)"), paste0("Reproducibility\nCV above, at LOD", footnote_marker_alphabet(3)), paste0("Repeatability\nCV (n)",footnote_marker_alphabet(4)), "Sensitivity", "Specificity")
+# 
+##Make table
+options(knitr.kable.NA = '')
+# table2 %>%
+  # mutate_all(linebreak) %>%
+kable(table2, format = "latex", booktabs = T, escape = F, col.names = linebreak(names(table2), align = "c")) %>%
+  # add_header_above(c("Organism (gene target)" = 1, "Efficiency (CV)" = 1, "LOD (copies/g stool)" = 1, "Reproducibility CV [range]" = 1, "Repeatability CV (n)" = 1, "Sensitivity" = 1, "Specificity" = 1)) #%>% 
+  # add_header_above(c(" " = 2, "Efficiency" = 1, "LOD" = 1, "Repeatability" = 1, "Reproducibility" = 1)) %>%
+  kableExtra::group_rows("Pathogenic E. coli", 1, 8) %>%
+  kableExtra::group_rows("Other Bacteria", 9, 16) %>%
+  kableExtra::group_rows("Protozoa & Helminthes", 17, 21) %>%
+  kableExtra::group_rows("General", 22, 24) %>%
+  kableExtra::group_rows("QC", 25, 25) %>%
+  kable_styling(latex_options = "scale_down") %>% # position = "left",
+  add_footnote(label = c("Coefficient of variation (CV) of efficiency calculated across 15-20 chips", "Minimum no. of gene copies per g of stool (minimum no. gene copies per 100 nL reaction)", "CV on calculated copy number for all points along the standard curve measured over 15-20 chips, shown separately for concentrations above the LOD and at the LOD", "CV in calculated copy number across 4 replicates as measured in n positive samples, mean CV is reported"), notation = "alphabet", threeparttable = TRUE) #%>%
+  # save_kable(keep_tex = T, file = "table2.latex")
+  # column_spec(2, italic = T)
+
+```
+
+##Make Table 1
+```{r, results="asis"}
+options(knitr.kable.NA = '',
+        knitr.table.format = "latex")
+table1 <- readxl::read_xlsx("/Users/JGrembi/Dropbox/01_PathogenChip/Manuscript/Table1_Final_21Mar19.xlsx") 
+names(table1) <- c("Assay","Assay Name","Organism","GeneTarget","Reference Sequence","R6", "R7","F and R Start position", "Amplicon Length", "Sequence (5' - 3')","Seq","Reference")
+table1_final <- table1 %>%
+   mutate(Reference = ifelse(Reference == "This study", Reference, ifelse(GeneTarget == "tcdB" | Organism %in% c("Cryptosporidium spp.","Trichuris trichiura"), "(15)", ifelse(Organism %in% c("Entamoeba histolytica", "Giardia lamblia"), "(36)", ifelse(Organism == "Ascaris lumbricoides", "(37)", ifelse(Organism == "Total Bacteria", "(58)", ifelse(Organism == "Total Archaea", "(38)", ifelse(Organism == "Total Fungi", "(39)", ifelse(GeneTarget == "gB", "(40)", Reference))))))))) %>%
+  mutate(Reference = ifelse(GeneTarget %in% c("ACAA2","B2M", "ESRRA"), "(31)", Reference)) %>%
+  slice(-57) %>%
+  select(Organism, GeneTarget, `Sequence (5' - 3')`, Seq, Reference) %>%
+  unite(Sequence, `Sequence (5' - 3')`, Seq, sep = " ")
+  
+write.csv(table1_final, "table1Final.csv")
+kable(table1_final, format = "latex", booktabs = T, col.names = c("Organism","Gene target", "Sequence (5' - 3')", "Reference"), linesep = c("", '\\addlinespace')) %>%
+  kableExtra::group_rows("Pathogenic Escherichia coli", 1, 16) %>%
+  kableExtra::group_rows("Other Bacteria", 17, 32) %>%
+  kableExtra::group_rows("Protozoa & Helminthes", 33, 42) %>%
+  kableExtra::group_rows("General", 43, 48) %>%
+  kableExtra::group_rows("QC", 49, 56) %>%
+  kable_styling(latex_options = "scale_down") #%>%
+  # save_kable(keep_tex = T, file = "table1.latex")
+
+
+```
+
+#Make Table S1 - Synthetic standard constructs
+```{r, results="asis"}
+options(knitr.kable.NA = '',
+        knitr.table.format = "latex")
+
+# orgOrder <- table1_final %>% 
+#   select(Organism) %>%
+#   na.omit() %>%
+#   filter(Organism != "Mus musculus")
+# 
+# tab_s1 <- read_excel("/Users/JGrembi/Dropbox/01_PathogenChip/Manuscript/SyntheticStandards_SI.xlsx", skip = 2) %>%
+#   right_join(orgOrder) 
+# 
+# write.csv(tab_s1[,-1], "/Users/JGrembi/Dropbox/01_PathogenChip/Manuscript/SyntheticStandards_SI_ordered.csv", row.names = FALSE)
+# kable(tab_s1[,-1], format = "latex", booktabs = T, col.names = c("Organism","Gene target", "Primer Reference ", "gBlock Ref. Sequence", "gBlock synthetic double-stranded linear nucleic acid standard template", "Notes"), linesep = c("", '\\addlinespace')) %>%
+#   # kableExtra::group_rows("Pathogenic Escherichia coli", 1, 16) %>%
+#   # kableExtra::group_rows("Other Bacteria", 17, 32) %>%
+#   # kableExtra::group_rows("Protozoa & Helminthes", 33, 42) %>%
+#   # kableExtra::group_rows("General", 43, 48) %>%
+#   # kableExtra::group_rows("QC", 49, 56) %>%
+#   kable_styling(latex_options = "scale_down")
+tableS1 <- read_excel("/Users/JGrembi/Dropbox/01_PathogenChip/Manuscript/TableS1_SyntheticStandards.xlsx", skip = 1) 
+
+kable(tableS1[-26,], format = "latex", booktabs = T, col.names = c("Organism","Gene target", "Primer Reference ", "gBlock Ref. Sequence", "gBlock synthetic double-stranded linear nucleic acid standard template", "Notes"), linesep = c("", '\\addlinespace')) %>%
+  # kableExtra::group_rows("Pathogenic Escherichia coli", 1, 16) %>%
+  # kableExtra::group_rows("Other Bacteria", 17, 32) %>%
+  # kableExtra::group_rows("Protozoa & Helminthes", 33, 42) %>%
+  # kableExtra::group_rows("General", 43, 48) %>%
+  # kableExtra::group_rows("QC", 49, 56) %>%
+  kable_styling(latex_options = "scale_down")
+```
+
