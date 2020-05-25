@@ -55,6 +55,10 @@ For new runs, three input files are required. They should be formatted like the 
 
 ### Run Configuration
 
+
+Primer design parameters can be configured in `nl_control_file_.py`
+
+
 Scripts were written to suggests thermodynamically compatible oligonucleotide PCR primer pairs capable of detecting and distinguish between members of diverse bacterial protein families. For each pathogen associated target gene, PCR assays were designed from nucleic acid sequences of a reference set of proteins within a larger protein family. Primer3 is a commonly used software for the design of oligonucleotide PCR primers. We used the command-line of Primer3 with the following parameters to design thousands of assays for each set of reference sequences. By using standard Wafergen™ validated assays known to perform well within a standard Wafergen™  thermocycler program, we tuned the input parameters of Primer3 to produce assays with similar predicted thermodynamic binding properties. The parameters used in the control file are provided in the code and in Mayer-Blackwell et al. 2014. These parameters produced many high efficiency assays when run at a 60C annealing temperature in the Roche LightCycler SYBR Green I Master Mix. Use of an alternative master mix or annealing temperatures may necessitate re-tuning of these parameters to account for the change in PCR conditions. We used the freely available EMBOSS program fuzznuc to performing fuzzy matching between each candidate assay and the relevant reductive Dehalogenase genes. This permitted estimatin of how many target and off-target gene sequences within a query set were complementary to a each primer pair, given a specified maximum numbers of mismatches. 
 
 
@@ -88,7 +92,6 @@ Mayer-Blackwell, K., Azizian, M. F., Machak, C., Vitale, E., Carpani, G., de Fer
 Rozen, S., & Skaletsky, H. (2000). Primer3 on the WWW for general users and for biologist programmers. In Bioinformatics methods and protocols (pp. 365-386). Humana Press, Totowa, NJ.
 
 
-Primer design parameters can be configured in `nl_control_file_.py`
 
 
 ### Archive of legacy versions of software used 
