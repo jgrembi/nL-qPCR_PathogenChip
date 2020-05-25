@@ -23,7 +23,7 @@ The files include:
 
 ## Primer Design Files
 
-We have included python scripts used to generate PCR primers and a Docker image with dependencies pre-installed.
+We have included python scripts used to generate PCR primers and a Docker image with dependencies pre-installed (see [Dockerfile](https://github.com/jgrembi/nL-qPCR_PathogenChip/blob/master/Dockerfile))
 
 
 [![Docker Repository on Quay](https://quay.io/repository/kmayerb/nlpr/status "Docker Repository on Quay")](https://quay.io/repository/kmayerb/nlpr)
@@ -42,7 +42,7 @@ cd /nL-qPCR_PathogenChip/nlpr/
 python nl_control_file_example.py
 ``` 
 
-After the scripts run, view example outputs generated in `/nL-qPCR_PathogenChip/nlpr/example` folder.
+3. After the scripts run, view example outputs generated in `/nL-qPCR_PathogenChip/nlpr/example` folder.
 
 ### Inputs
 
@@ -59,14 +59,12 @@ Primer design parameters can be configured in `nl_control_file_.py`
 
 
 ### Archive of legacy versions of software used 
-```
-[cd-hit-v4.5.4-2011-03-07.tgz](https://www.dropbox.com/s/34ybl944fkcefds/cd-hit-v4.5.4-2011-03-07.tgz?dl=1)
 
-[primer3-2.3.4.tar.gz](https://www.dropbox.com/s/z7x7tx1cmvwvl9h/primer3-2.3.4.tar.gz?dl=1)
+- cd-hit-v4.5.4-2011-03-07.tgz [download](https://www.dropbox.com/s/34ybl944fkcefds/cd-hit-v4.5.4-2011-03-07.tgz?dl=1)
 
-[ncbi-blast-2.2.18-universal-macosx.tar.gz](https://www.dropbox.com/s/y2jeajmxgcho0bt/ncbi-blast-2.2.18%2B-universal-macosx.tar.gz?dl=1)
+- primer3-2.3.4.tar.gz [download](https://www.dropbox.com/s/z7x7tx1cmvwvl9h/primer3-2.3.4.tar.gz?dl=1)
 
-[silix-1.2.6.tar.gz](https://www.dropbox.com/s/rlctg1chfxqr13c/silix-1.2.6.tar.gz?dl=1)
+- ncbi-blast-2.2.18-universal-macosx.tar.gz [download](https://www.dropbox.com/s/y2jeajmxgcho0bt/ncbi-blast-2.2.18%2B-universal-macosx.tar.gz?dl=1)
 
-```
+- silix-1.2.6.tar.gz [download](https://www.dropbox.com/s/rlctg1chfxqr13c/silix-1.2.6.tar.gz?dl=1)
 
