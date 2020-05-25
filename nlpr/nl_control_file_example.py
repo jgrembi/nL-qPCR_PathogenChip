@@ -41,11 +41,11 @@ silix_database_name =  'example_SILIX'
 	# primer design run name
 run_name = 'example' 
 	# filename_fasta_amino_acid
-fn_faa ='/nlpr/nlpr/inputs/PF00699.gp.target.faa.minimal.concise' 
+fn_faa ='/nL-qPCR_PathogenChip/nlpr/inputs/PF00699.gp.target.faa.minimal.concise' 
 	# filename_fasta_nucleic_acid
-fn_fna = '/nlpr/nlpr/inputs/PF00699.gp.minimal.nt.gbk.fna.concise' 
+fn_fna = '/nL-qPCR_PathogenChip/nlpr/inputs/PF00699.gp.minimal.nt.gbk.fna.concise' 
 	# filename_blast_result
-fn_blastresult = '/nlpr/nlpr/inputs/PF00699.gp.target.faa.minimal.concise.all-v-all_blastp_output'  
+fn_blastresult = '/nL-qPCR_PathogenChip/nlpr/inputs/PF00699.gp.target.faa.minimal.concise.all-v-all_blastp_output'  
 
 # custom_ranked_accession_list (ARGUEMNT ONLY USED IF: use_custom_ranked_list ==True)
 # The user may provide a custom_ranked list of accession of key proteins to be used as 
@@ -82,7 +82,7 @@ number_of_primers_to_generate = 5000
 # fuznuc nl
 number_of_primers_to_review = 5000
 
-# Subnetwork parametners
+# Subnetwork parameters
 starting_level_identity = 0.90 # 
 inclusion_size = 3
 inclusion_identity_final_point = 0.87
