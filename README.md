@@ -29,7 +29,7 @@ We have included python scripts used to generate PCR primers and a Docker image 
 [![Docker Repository on Quay](https://quay.io/repository/kmayerb/nlpr/status "Docker Repository on Quay")](https://quay.io/repository/kmayerb/nlpr)
 
 
-## Using nLprime
+### nlpr - nLPrime 
 
 1. If working on OSX or Windows, download, install and run [Docker Desktop](https://www.docker.com/products/docker-desktop). 
 2. With Docker Desktop running, from the command line:
@@ -39,8 +39,23 @@ docker pull quay.io/kmayerb/nlpr:0.0.3
 docker run -it quay.io/kmayerb/nlpr:0.0.3
 git clone https://github.com/jgrembi/nL-qPCR_PathogenChip.git
 cd /nL-qPCR_PathogenChip/nlpr/
-python nl_control_file_pks.py
+python nl_control_file_example.py
 ``` 
+
+After the scripts run, you can see example outputs in `/nL-qPCR_PathogenChip/nlpr/example` folder.
+
+### Inputs
+
+For new runs three input files are requred formatted like the fils in the `nlpr/inputs` folder.
+
+1. Nuleic Acids fasta `*fna`
+2. Protein fasta  `*.faa`
+3. Tabular results of an all_v_all blastp or blastn `.all-v-all_blastp_output`
+
+
+### Run Configuration
+
+Primer design can be configured in `nl_control_file_.py`
 
 
 ### Archive of legacy versions of software used 
