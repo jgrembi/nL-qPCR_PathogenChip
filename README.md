@@ -1,4 +1,5 @@
 # nL-qPCR_PathogenChip
+
 Code and datasets associated with evaluation of nL-qPCR for enteric pathogen detection and comparison against a commonly used uL volume enteric TaqMan array card (TAC).
 
 The files include:
@@ -46,7 +47,7 @@ python nl_control_file_example.py
 
 #### nlpr - Inputs
 
-For new runs, three input files are required. They should be formatted like the files in the `nlpr/inputs` folder.
+For new runs, three input files are required. They should be formatted like the files in the `nlpr/inputs` folder of this repo.
 
 1. Nuleic Acids fasta `*fna`
 2. Protein fasta  `*.faa`
@@ -84,23 +85,23 @@ PRIMER_LIB_AMBIGUITY_CODES_CONSENSUS=0
 
 #### nlpr - Citing 
 
-If you use these scripts in your research, you should cite:
+If you use these scripts in your research, please cite:
 
-EMBOSS: The European Molecular Biology Open Software Suite (2000) Rice,P. Longden,I. and Bleasby,A. Trends in Genetics 16, (6) pp276—277
+* EMBOSS: The European Molecular Biology Open Software Suite (2000) Rice,P. Longden,I. and Bleasby,A. Trends in Genetics 16, (6) pp276—277
 
-Mayer-Blackwell, K., Azizian, M. F., Machak, C., Vitale, E., Carpani, G., de Ferra, F., ... & Spormann, A. M. (2014). Nanoliter qPCR platform for highly parallel, quantitative assessment of reductive dehalogenase genes and populations of dehalogenating microorganisms in complex environments. Environmental science & technology, 48(16), 9659-9667.
+* Mayer-Blackwell, K., Azizian, M. F., Machak, C., Vitale, E., Carpani, G., de Ferra, F., ... & Spormann, A. M. (2014). Nanoliter qPCR platform for highly parallel, quantitative assessment of reductive dehalogenase genes and populations of dehalogenating microorganisms in complex environments. Environmental science & technology, 48(16), 9659-9667.
 
-Rozen, S., & Skaletsky, H. (2000). Primer3 on the WWW for general users and for biologist programmers. In Bioinformatics methods and protocols (pp. 365-386). Humana Press, Totowa, NJ.
+* Rozen, S., & Skaletsky, H. (2000). Primer3 on the WWW for general users and for biologist programmers. In Bioinformatics methods and protocols (pp. 365-386). Humana Press, Totowa, NJ.
 
 
 
 #### Legacy versions of software used 
 
-- cd-hit-v4.5.4-2011-03-07.tgz [download](https://www.dropbox.com/s/34ybl944fkcefds/cd-hit-v4.5.4-2011-03-07.tgz?dl=1)
+* cd-hit-v4.5.4-2011-03-07.tgz [download](https://www.dropbox.com/s/34ybl944fkcefds/cd-hit-v4.5.4-2011-03-07.tgz?dl=1)
 
-- primer3-2.3.4.tar.gz [download](https://www.dropbox.com/s/z7x7tx1cmvwvl9h/primer3-2.3.4.tar.gz?dl=1)
+* primer3-2.3.4.tar.gz [download](https://www.dropbox.com/s/z7x7tx1cmvwvl9h/primer3-2.3.4.tar.gz?dl=1)
 
-- ncbi-blast-2.2.18-universal-macosx.tar.gz [download](https://www.dropbox.com/s/y2jeajmxgcho0bt/ncbi-blast-2.2.18%2B-universal-macosx.tar.gz?dl=1)
+* ncbi-blast-2.2.18-universal-macosx.tar.gz [download](https://www.dropbox.com/s/y2jeajmxgcho0bt/ncbi-blast-2.2.18%2B-universal-macosx.tar.gz?dl=1)
 
-- silix-1.2.6.tar.gz [download](https://www.dropbox.com/s/rlctg1chfxqr13c/silix-1.2.6.tar.gz?dl=1)
+* silix-1.2.6.tar.gz [download](https://www.dropbox.com/s/rlctg1chfxqr13c/silix-1.2.6.tar.gz?dl=1)
 
