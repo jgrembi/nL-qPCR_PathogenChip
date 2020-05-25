@@ -23,7 +23,7 @@ The files include:
 
 ## Primer Design Files
 
-We have included python scripts used to generate PCR primers and a Docker image dependencies installed.
+We have included python scripts used to generate PCR primers and a Docker image with dependencies pre-installed.
 
 
 [![Docker Repository on Quay](https://quay.io/repository/kmayerb/nlpr/status "Docker Repository on Quay")](https://quay.io/repository/kmayerb/nlpr)
@@ -42,11 +42,11 @@ cd /nL-qPCR_PathogenChip/nlpr/
 python nl_control_file_example.py
 ``` 
 
-After the scripts run, you can see example outputs in `/nL-qPCR_PathogenChip/nlpr/example` folder.
+After the scripts run, view example outputs generated in `/nL-qPCR_PathogenChip/nlpr/example` folder.
 
 ### Inputs
 
-For new runs three input files are requred formatted like the fils in the `nlpr/inputs` folder.
+For new runs, three input files are required. They should be formatted like the files in the `nlpr/inputs` folder.
 
 1. Nuleic Acids fasta `*fna`
 2. Protein fasta  `*.faa`
@@ -55,7 +55,7 @@ For new runs three input files are requred formatted like the fils in the `nlpr/
 
 ### Run Configuration
 
-Primer design can be configured in `nl_control_file_.py`
+Primer design parameters can be configured in `nl_control_file_.py`
 
 
 ### Archive of legacy versions of software used 
