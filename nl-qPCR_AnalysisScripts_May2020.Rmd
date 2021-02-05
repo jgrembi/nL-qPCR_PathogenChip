@@ -1,7 +1,7 @@
 ---
-title: "Analyses conducted for Journal of Clinical Microbiology manuscript: High-throughput multi-parallel enteropathogen quantification via nano-liter qPCR"
+title: "Analyses conducted for Frontiers in Cellular and Infection Microbiology manuscript: High-throughput multi-parallel enteropathogen quantification via nano-liter qPCR"
 author: "J Grembi"
-date: "3/5/2019"
+date: "5/2020"
 output: 
   BiocStyle::pdf_document:
       number_sections: no
